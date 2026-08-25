@@ -6,6 +6,10 @@ struct GyroscopeData {
     float X = 0.0f;
     float Y = 0.0f;
     float Z = 0.0f;
+
+    bool operator==(const GyroscopeData& other) const {
+        return X == other.X && Y == other.Y && Z == other.Z;
+    }
 };
 
 struct FrontGyroscope {
@@ -35,13 +39,16 @@ void setup() {
         GyroscopeData{1.0f, 2.0f, 3.0f}
     );
 
-    const auto* front = remoteState.Get<FrontGyroscope>(remoteDevice);
-    if (front != nullptr && front->HasValue) {
+    RemoteStateSnapshot<GyroscopeData> front;
+    if (
+        remoteState.Read<FrontGyroscope>(remoteDevice, front) &&
+        front.HasValue
+    ) {
         Serial.printf(
             "Front gyro: %.2f %.2f %.2f\n",
-            front->Value.X,
-            front->Value.Y,
-            front->Value.Z
+            front.Value.X,
+            front.Value.Y,
+            front.Value.Z
         );
     }
 }
