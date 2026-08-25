@@ -58,11 +58,13 @@ int main() {
     const uint8_t otherMac[6] = {0xD4,0xD4,0xDA,0x96,0x77,0x81};
     const auto device = DeviceIdentifier::FromMacAddress(mac);
     const auto otherDevice = DeviceIdentifier::FromMacAddress(otherMac);
-    assert(!device.IsZero());
+    uint8_t recoveredMac[6] = {};
+    assert(device.TryGetMacAddress(recoveredMac));
+    for (std::size_t i = 0; i < 6; ++i) assert(recoveredMac[i] == mac[i]);
 
     StateObserver observer;
     RemoteStateManager<Contract, 2> manager;
-    auto managerHandle = manager.RegisterObserver(&observer);
+    auto managerHandle = manager.RegisterObserver(static_cast<IRemoteStateManagerObserver*>(&observer));
     assert(manager.Apply<FrontGyroscope>(device, 1, 1, {1,2,3}));
     assert(observer.Devices == 1 && observer.Accepted == 1 && observer.Changed == 1);
 
@@ -78,7 +80,7 @@ int main() {
     assert(observer.Rejected == 1 && observer.Availability == 1);
 
     StateSubscriptionRegistry<3> subscriptions;
-    auto subscriptionHandle = subscriptions.RegisterObserver(&observer);
+    auto subscriptionHandle = subscriptions.RegisterObserver(static_cast<IStateSubscriptionRegistryObserver*>(&observer));
     assert(subscriptions.Subscribe<FrontGyroscope>());
     assert(subscriptions.Subscribe<RearGyroscope>(StateSubscription<RearGyroscope>::From(device)));
     assert(subscriptions.IsSubscribed<FrontGyroscope>(otherDevice));
@@ -88,7 +90,7 @@ int main() {
 
     GyroscopeData authoritative{20,21,22};
     StatePublisher<Contract> publisher(device, 7);
-    auto publisherHandle = publisher.RegisterObserver(&observer);
+    auto publisherHandle = publisher.RegisterObserver(static_cast<IStatePublisherObserver*>(&observer));
     assert(publisher.RegisterSource<FrontGyroscope>([&] { return authoritative; }));
     assert(publisher.RegisterSource<RearGyroscope>([&] { return GyroscopeData{30,31,32}; }));
     assert(observer.Sources == 2);
@@ -105,8 +107,17 @@ int main() {
     assert(snapshot.Header.Revision == 1);
     assert(snapshot.Value == authoritative);
 
+    std::array<uint8_t, 128> wire{};
+    std::size_t wireSize = 0;
+    assert(StateProtocol::EncodeUpdate<FrontGyroscope>(snapshot, wire.data(), wire.size(), wireSize));
+    StateProtocol::ParsedUpdate parsed;
+    assert(StateProtocol::DecodeUpdate(wire.data(), wireSize, parsed));
+    GyroscopeData decoded;
+    assert(StateProtocol::DecodeValue<FrontGyroscope>(parsed, decoded));
+    assert(decoded == authoritative);
+
     StatePublicationTracker<FrontGyroscope> tracker(otherDevice);
-    auto trackerHandle = tracker.RegisterObserver(&observer);
+    auto trackerHandle = tracker.RegisterObserver(static_cast<IStatePublicationObserver*>(&observer));
     assert(tracker.Replace(7, 1, {1,1,1}));
     assert(observer.Pending == 1);
     assert(tracker.Replace(7, 2, {2,2,2}));
