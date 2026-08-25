@@ -14,8 +14,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout Observable
+        uses: actions/checkout@v4
+        with:
+          repository: ESPressio-Development-Platform/ESPressio-Observable
+          path: ESPressio-Observable
       - name: Configure
-        run: cmake -S tests -B build
+        run: >-
+          cmake -S tests -B build
+          -DESPRESSIO_OBSERVABLE_DIR=${{ github.workspace }}/ESPressio-Observable/src
       - name: Build
         run: cmake --build build --parallel
       - name: Test
