@@ -71,6 +71,25 @@ public:
     ) {}
 };
 
+template<typename TDerived, typename TDefinition>
+class StatePublishedObserverForwarder : public IStatePublishedObserver<TDefinition> {
+public:
+    void OnStatePublished(
+        StateTag<TDefinition>,
+        const StateUpdate<StateValueType<TDefinition>>& update
+    ) final {
+        static_cast<TDerived*>(this)->template OnTypedStatePublished<TDefinition>(update);
+    }
+};
+
+template<typename TDerived, typename TContract>
+class StatePublishedObserverPack;
+
+template<typename TDerived, typename... TDefinitions>
+class StatePublishedObserverPack<TDerived, StateContract<TDefinitions...>> :
+    public StatePublishedObserverForwarder<TDerived, TDefinitions>... {
+};
+
 class IStatePublicationObserver : public Observable::IObserver {
 public:
     virtual ~IStatePublicationObserver() = default;
