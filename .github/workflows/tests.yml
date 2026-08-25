@@ -28,19 +28,18 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
-  esp32-compile:
+  esp32-core:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
-      - name: Install PlatformIO
-        run: pip install platformio
-      - name: Create integration project
+      - run: pip install platformio
+      - name: Create core integration project
         run: |
-          mkdir -p /tmp/state-integration/src
-          cat > /tmp/state-integration/platformio.ini <<'EOF'
+          mkdir -p /tmp/state-core/src
+          cat > /tmp/state-core/platformio.ini <<'EOF'
           [env:esp32dev]
           platform = espressif32
           board = esp32dev
@@ -49,19 +48,48 @@ jobs:
               file://${{ github.workspace }}
           build_flags = -std=gnu++17
           EOF
-          cat > /tmp/state-integration/src/main.cpp <<'EOF'
+          cat > /tmp/state-core/src/main.cpp <<'EOF'
           #include <Arduino.h>
           #include <ESPressio_State.hpp>
-
-          struct LedState {
-              using Value = bool;
-              static constexpr ESPressio::State::StateTypeId Id = 1;
-          };
+          struct LedState { using Value = bool; static constexpr ESPressio::State::StateTypeId Id = 1; };
           using Contract = ESPressio::State::StateContract<LedState>;
-          ESPressio::State::RemoteStateManager<Contract, 2> state;
-
+          ESPressio::State::RemoteStateManager<Contract, 2> remoteState;
+          ESPressio::State::StatePublisher<Contract> publisher;
           void setup() {}
           void loop() {}
           EOF
-      - name: Compile ESP32 integration
-        run: pio run -d /tmp/state-integration
+      - run: pio run -d /tmp/state-core
+
+  esp32-observer-thread:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: pip install platformio
+      - name: Create observer integration project
+        run: |
+          mkdir -p /tmp/state-observer/src
+          cat > /tmp/state-observer/platformio.ini <<'EOF'
+          [env:esp32dev]
+          platform = espressif32
+          board = esp32dev
+          framework = arduino
+          lib_deps =
+              file://${{ github.workspace }}
+              https://github.com/ESPressio-Development-Platform/ESPressio-Threads.git#optimisation/69-resource-footprint
+          build_flags = -std=gnu++17
+          EOF
+          cat > /tmp/state-observer/src/main.cpp <<'EOF'
+          #include <Arduino.h>
+          #include <ESPressio_State.hpp>
+          #include <ESPressio_RemoteStateObserverThread.hpp>
+          struct LedState { using Value = bool; static constexpr ESPressio::State::StateTypeId Id = 1; };
+          using Contract = ESPressio::State::StateContract<LedState>;
+          ESPressio::State::RemoteStateManager<Contract, 2> remoteState;
+          ESPressio::State::RemoteStateObserverThread<Contract, 2> observerThread(remoteState);
+          void setup() { observerThread.Prepare(); }
+          void loop() {}
+          EOF
+      - run: pio run -d /tmp/state-observer
