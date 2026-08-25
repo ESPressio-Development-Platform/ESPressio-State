@@ -3,9 +3,13 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+
+#include <ESPressio_ThreadSafeObservable.hpp>
 
 #include "ESPressio_DeviceIdentifier.hpp"
 #include "ESPressio_StateContract.hpp"
+#include "ESPressio_StateObservers.hpp"
 
 namespace ESPressio {
 namespace State {
@@ -38,15 +42,20 @@ struct PendingStateUpdate final {
     StateRevision LastAcknowledgedRevision = 0;
     TValue Value{};
 
-    void Replace(StateEpoch epoch, StateRevision revision, const TValue& value) {
-        if (revision == 0) return;
-        if (Pending && epoch < Epoch) return;
-        if (Pending && epoch == Epoch && revision <= Revision) return;
+    bool Replace(
+        StateEpoch epoch,
+        StateRevision revision,
+        const TValue& value
+    ) {
+        if (revision == 0) return false;
+        if (Pending && epoch < Epoch) return false;
+        if (Pending && epoch == Epoch && revision <= Revision) return false;
 
         Epoch = epoch;
         Revision = revision;
         Value = value;
         Pending = true;
+        return true;
     }
 
     bool Acknowledge(StateEpoch epoch, StateRevision revision) {
@@ -57,6 +66,177 @@ struct PendingStateUpdate final {
         if (Pending && revision >= Revision) {
             Pending = false;
         }
+        return true;
+    }
+};
+
+template<typename TDefinition>
+class StatePublicationTracker final {
+public:
+    using Value = StateValueType<TDefinition>;
+
+private:
+    class PublicationObservable final : public Observable::ThreadSafeObservable {
+    public:
+        void Pending(
+            const DeviceIdentifier& destination,
+            StateEpoch epoch,
+            StateRevision revision
+        ) {
+            ExecuteNotification([&](NotificationContext& notification) {
+                notification.WithObservers<IStatePublicationObserver>(
+                    [&](IStatePublicationObserver* observer) {
+                        observer->OnStatePublicationPending(
+                            destination,
+                            StateTypeIdOf<TDefinition>,
+                            epoch,
+                            revision
+                        );
+                    }
+                );
+            });
+        }
+
+        void Superseded(
+            const DeviceIdentifier& destination,
+            StateEpoch previousEpoch,
+            StateRevision previousRevision,
+            StateEpoch epoch,
+            StateRevision revision
+        ) {
+            ExecuteNotification([&](NotificationContext& notification) {
+                notification.WithObservers<IStatePublicationObserver>(
+                    [&](IStatePublicationObserver* observer) {
+                        observer->OnStatePublicationSuperseded(
+                            destination,
+                            StateTypeIdOf<TDefinition>,
+                            previousEpoch,
+                            previousRevision,
+                            epoch,
+                            revision
+                        );
+                    }
+                );
+            });
+        }
+
+        void Acknowledged(
+            const DeviceIdentifier& destination,
+            StateEpoch epoch,
+            StateRevision revision
+        ) {
+            ExecuteNotification([&](NotificationContext& notification) {
+                notification.WithObservers<IStatePublicationObserver>(
+                    [&](IStatePublicationObserver* observer) {
+                        observer->OnStatePublicationAcknowledged(
+                            destination,
+                            StateTypeIdOf<TDefinition>,
+                            epoch,
+                            revision
+                        );
+                    }
+                );
+            });
+        }
+
+        void StaleAcknowledgement(
+            const DeviceIdentifier& destination,
+            StateEpoch epoch,
+            StateRevision revision
+        ) {
+            ExecuteNotification([&](NotificationContext& notification) {
+                notification.WithObservers<IStatePublicationObserver>(
+                    [&](IStatePublicationObserver* observer) {
+                        observer->OnStatePublicationStaleAcknowledgement(
+                            destination,
+                            StateTypeIdOf<TDefinition>,
+                            epoch,
+                            revision
+                        );
+                    }
+                );
+            });
+        }
+    };
+
+    DeviceIdentifier _destination{};
+    PendingStateUpdate<Value> _pending{};
+    std::shared_ptr<PublicationObservable> _observable =
+        std::make_shared<PublicationObservable>();
+
+public:
+    explicit StatePublicationTracker(
+        const DeviceIdentifier& destination = DeviceIdentifier{}
+    ) : _destination(destination) {}
+
+    Observable::ObserverHandlePtr RegisterObserver(
+        Observable::IObserver* observer
+    ) {
+        return _observable->RegisterObserver(observer);
+    }
+
+    void UnregisterObserver(Observable::IObserver* observer) {
+        _observable->UnregisterObserver(observer);
+    }
+
+    const DeviceIdentifier& Destination() const noexcept {
+        return _destination;
+    }
+
+    void SetDestination(const DeviceIdentifier& destination) {
+        _destination = destination;
+    }
+
+    const PendingStateUpdate<Value>& PendingUpdate() const noexcept {
+        return _pending;
+    }
+
+    bool Replace(
+        StateEpoch epoch,
+        StateRevision revision,
+        const Value& value
+    ) {
+        const bool hadPending = _pending.Pending;
+        const StateEpoch previousEpoch = _pending.Epoch;
+        const StateRevision previousRevision = _pending.Revision;
+
+        if (!_pending.Replace(epoch, revision, value)) return false;
+
+        if (hadPending) {
+            _observable->Superseded(
+                _destination,
+                previousEpoch,
+                previousRevision,
+                epoch,
+                revision
+            );
+        } else {
+            _observable->Pending(_destination, epoch, revision);
+        }
+        return true;
+    }
+
+    bool Acknowledge(StateEpoch epoch, StateRevision revision) {
+        const bool current =
+            _pending.Pending &&
+            epoch == _pending.Epoch &&
+            revision >= _pending.Revision;
+
+        const bool accepted = _pending.Acknowledge(epoch, revision);
+        if (!accepted || !current) {
+            _observable->StaleAcknowledgement(
+                _destination,
+                epoch,
+                revision
+            );
+            return accepted;
+        }
+
+        _observable->Acknowledged(
+            _destination,
+            epoch,
+            revision
+        );
         return true;
     }
 };
