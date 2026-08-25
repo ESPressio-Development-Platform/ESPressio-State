@@ -38,9 +38,7 @@ class StatePublisher final {
         void SourceRegistered(StateTypeId typeId) {
             ExecuteNotification([&](NotificationContext& notification) {
                 notification.WithObservers<IStatePublisherObserver>(
-                    [&](IStatePublisherObserver* observer) {
-                        observer->OnStateSourceRegistered(typeId);
-                    }
+                    [&](IStatePublisherObserver* observer) { observer->OnStateSourceRegistered(typeId); }
                 );
             });
         }
@@ -48,9 +46,7 @@ class StatePublisher final {
         void SourceUnregistered(StateTypeId typeId) {
             ExecuteNotification([&](NotificationContext& notification) {
                 notification.WithObservers<IStatePublisherObserver>(
-                    [&](IStatePublisherObserver* observer) {
-                        observer->OnStateSourceUnregistered(typeId);
-                    }
+                    [&](IStatePublisherObserver* observer) { observer->OnStateSourceUnregistered(typeId); }
                 );
             });
         }
@@ -69,7 +65,7 @@ class StatePublisher final {
                 );
                 notification.WithObservers<IStatePublishedObserver<TDefinition>>(
                     [&](IStatePublishedObserver<TDefinition>* observer) {
-                        observer->OnStatePublished(update);
+                        observer->OnStatePublished(StateTag<TDefinition>{}, update);
                     }
                 );
             });
@@ -79,25 +75,18 @@ class StatePublisher final {
     DeviceIdentifier _origin{};
     StateEpoch _epoch = 1;
     typename StateSourceTuple<TContract>::Type _sources{};
-    std::shared_ptr<PublisherObservable> _observable =
-        std::make_shared<PublisherObservable>();
+    std::shared_ptr<PublisherObservable> _observable = std::make_shared<PublisherObservable>();
     mutable std::recursive_mutex _mutex;
 
     template<typename TDefinition>
     StateSourceSlot<TDefinition>& SourceSlot() {
-        static_assert(
-            TContract::template Contains<TDefinition>,
-            "State definition is not part of this StateContract"
-        );
+        static_assert(TContract::template Contains<TDefinition>, "State definition is not part of this StateContract");
         return std::get<TContract::template IndexOf<TDefinition>()>(_sources);
     }
 
     template<typename TDefinition>
     const StateSourceSlot<TDefinition>& SourceSlot() const {
-        static_assert(
-            TContract::template Contains<TDefinition>,
-            "State definition is not part of this StateContract"
-        );
+        static_assert(TContract::template Contains<TDefinition>, "State definition is not part of this StateContract");
         return std::get<TContract::template IndexOf<TDefinition>()>(_sources);
     }
 
@@ -111,7 +100,6 @@ class StatePublisher final {
             ++source.Revision;
             if (source.Revision == 0) ++source.Revision;
         }
-
         StateUpdate<StateValueType<TDefinition>> update;
         update.Header.Origin = _origin;
         update.Header.TypeId = StateTypeIdOf<TDefinition>;
@@ -122,34 +110,16 @@ class StatePublisher final {
     }
 
 public:
-    explicit StatePublisher(
-        const DeviceIdentifier& origin = DeviceIdentifier{},
-        StateEpoch epoch = 1
-    ) : _origin(origin),
-        _epoch(epoch == 0 ? 1 : epoch) {}
+    explicit StatePublisher(const DeviceIdentifier& origin = DeviceIdentifier{}, StateEpoch epoch = 1)
+        : _origin(origin), _epoch(epoch == 0 ? 1 : epoch) {}
 
-    Observable::ObserverHandlePtr RegisterObserver(
-        Observable::IObserver* observer
-    ) {
-        return _observable->RegisterObserver(observer);
-    }
-
-    void UnregisterObserver(Observable::IObserver* observer) {
-        _observable->UnregisterObserver(observer);
-    }
-
-    const DeviceIdentifier& Origin() const noexcept {
-        return _origin;
-    }
-
-    StateEpoch Epoch() const noexcept {
-        return _epoch;
-    }
+    Observable::ObserverHandlePtr RegisterObserver(Observable::IObserver* observer) { return _observable->RegisterObserver(observer); }
+    void UnregisterObserver(Observable::IObserver* observer) { _observable->UnregisterObserver(observer); }
+    const DeviceIdentifier& Origin() const noexcept { return _origin; }
+    StateEpoch Epoch() const noexcept { return _epoch; }
 
     template<typename TDefinition>
-    bool RegisterSource(
-        std::function<StateValueType<TDefinition>()> source
-    ) {
+    bool RegisterSource(std::function<StateValueType<TDefinition>()> source) {
         if (!source) return false;
         {
             std::lock_guard<std::recursive_mutex> lock(_mutex);
@@ -168,9 +138,7 @@ public:
             hadSource = static_cast<bool>(source.Source);
             source.Source = {};
         }
-        if (hadSource) {
-            _observable->SourceUnregistered(StateTypeIdOf<TDefinition>);
-        }
+        if (hadSource) _observable->SourceUnregistered(StateTypeIdOf<TDefinition>);
         return hadSource;
     }
 
@@ -210,7 +178,6 @@ public:
             source = SourceSlot<TDefinition>().Source;
         }
         if (!source) return false;
-
         const auto value = source();
         {
             std::lock_guard<std::recursive_mutex> lock(_mutex);
