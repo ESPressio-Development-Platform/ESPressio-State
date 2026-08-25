@@ -45,6 +45,9 @@ int main() {
     assert(device.Bytes()[10] == mac[0]);
     assert(device.Bytes()[15] == mac[5]);
 
+    const uint8_t otherMac[6] = {0xD4, 0xD4, 0xDA, 0x96, 0x77, 0x81};
+    const auto otherDevice = DeviceIdentifier::FromMacAddress(otherMac);
+
     RemoteStateManager<Contract, 2> manager;
     assert(manager.GetDeviceCount() == 0);
 
@@ -79,6 +82,38 @@ int main() {
 
     assert(manager.SetAvailability(device, RemoteDeviceAvailability::Connected));
     assert(manager.GetAvailability(device) == RemoteDeviceAvailability::Connected);
+
+    StateSubscriptionRegistry<3> subscriptions;
+    assert(subscriptions.Subscribe<FrontGyroscope>());
+    assert(subscriptions.IsSubscribed<FrontGyroscope>(device));
+    assert(subscriptions.IsSubscribed<FrontGyroscope>(otherDevice));
+
+    assert(subscriptions.Subscribe<RearGyroscope>(StateSubscription<RearGyroscope>::From(device)));
+    assert(subscriptions.IsSubscribed<RearGyroscope>(device));
+    assert(!subscriptions.IsSubscribed<RearGyroscope>(otherDevice));
+    assert(subscriptions.Count() == 2);
+
+    assert(subscriptions.Unsubscribe<FrontGyroscope>());
+    assert(!subscriptions.IsSubscribed<FrontGyroscope>(device));
+
+    PendingStateUpdate<GyroscopeData> pending;
+    pending.Replace(1, 10, {1, 1, 1});
+    assert(pending.Pending);
+    assert(pending.Revision == 10);
+
+    // A newer State revision replaces stale pending work rather than queuing it.
+    pending.Replace(1, 11, {2, 2, 2});
+    assert(pending.Revision == 11);
+    assert(pending.Value == GyroscopeData{2, 2, 2});
+
+    // A late ACK for the superseded revision does not clear the latest State.
+    assert(pending.Acknowledge(1, 10));
+    assert(pending.Pending);
+    assert(pending.LastAcknowledgedRevision == 10);
+
+    assert(pending.Acknowledge(1, 11));
+    assert(!pending.Pending);
+    assert(pending.LastAcknowledgedRevision == 11);
 
     return 0;
 }
