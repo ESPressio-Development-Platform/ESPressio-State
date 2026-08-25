@@ -2,16 +2,63 @@
 
 #include <array>
 #include <cstddef>
+#include <memory>
 #include <mutex>
+
+#include <ESPressio_ThreadSafeObservable.hpp>
 
 #include "ESPressio_DeviceIdentifier.hpp"
 #include "ESPressio_StateContract.hpp"
+#include "ESPressio_StateObservers.hpp"
 
 namespace ESPressio {
 namespace State {
 
 template<typename TContract, std::size_t TMaximumSubscribers>
 class StateSubscriberRegistry final {
+    class RegistryObservable final : public Observable::ThreadSafeObservable {
+    public:
+        void Added(const DeviceIdentifier& device, StateTypeId typeId) {
+            ExecuteNotification([&](NotificationContext& notification) {
+                notification.WithObservers<IStateSubscriberRegistryObserver>(
+                    [&](IStateSubscriberRegistryObserver* observer) {
+                        observer->OnRemoteStateSubscriberAdded(device, typeId);
+                    }
+                );
+            });
+        }
+
+        void Removed(const DeviceIdentifier& device, StateTypeId typeId) {
+            ExecuteNotification([&](NotificationContext& notification) {
+                notification.WithObservers<IStateSubscriberRegistryObserver>(
+                    [&](IStateSubscriberRegistryObserver* observer) {
+                        observer->OnRemoteStateSubscriberRemoved(device, typeId);
+                    }
+                );
+            });
+        }
+
+        void DeviceRemoved(const DeviceIdentifier& device) {
+            ExecuteNotification([&](NotificationContext& notification) {
+                notification.WithObservers<IStateSubscriberRegistryObserver>(
+                    [&](IStateSubscriberRegistryObserver* observer) {
+                        observer->OnRemoteStateSubscriberDeviceRemoved(device);
+                    }
+                );
+            });
+        }
+
+        void CapacityExhausted(const DeviceIdentifier& device, StateTypeId typeId) {
+            ExecuteNotification([&](NotificationContext& notification) {
+                notification.WithObservers<IStateSubscriberRegistryObserver>(
+                    [&](IStateSubscriberRegistryObserver* observer) {
+                        observer->OnRemoteStateSubscriberCapacityExhausted(device, typeId);
+                    }
+                );
+            });
+        }
+    };
+
     struct SubscriberRecord {
         bool Used = false;
         DeviceIdentifier Device{};
@@ -20,6 +67,8 @@ class StateSubscriberRegistry final {
 
     std::array<SubscriberRecord, TMaximumSubscribers> _subscribers{};
     mutable std::mutex _mutex;
+    std::shared_ptr<RegistryObservable> _observable =
+        std::make_shared<RegistryObservable>();
 
     SubscriberRecord* FindLocked(const DeviceIdentifier& device) {
         for (auto& subscriber : _subscribers) {
@@ -44,24 +93,55 @@ class StateSubscriberRegistry final {
 public:
     static constexpr std::size_t MaximumSubscribers = TMaximumSubscribers;
 
+    Observable::ObserverHandlePtr RegisterObserver(
+        IStateSubscriberRegistryObserver* observer
+    ) {
+        return _observable->RegisterObserver(observer);
+    }
+
+    void UnregisterObserver(IStateSubscriberRegistryObserver* observer) {
+        _observable->UnregisterObserver(observer);
+    }
+
     bool Subscribe(const DeviceIdentifier& device, StateTypeId typeId) {
         std::size_t index = 0;
         if (!TContract::TryIndexOf(typeId, index)) return false;
-        std::lock_guard<std::mutex> lock(_mutex);
-        auto* subscriber = FindOrCreateLocked(device);
-        if (subscriber == nullptr) return false;
-        subscriber->States[index] = true;
+
+        bool added = false;
+        bool capacityExhausted = false;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            auto* subscriber = FindOrCreateLocked(device);
+            if (subscriber == nullptr) {
+                capacityExhausted = true;
+            } else if (!subscriber->States[index]) {
+                subscriber->States[index] = true;
+                added = true;
+            }
+        }
+
+        if (capacityExhausted) {
+            _observable->CapacityExhausted(device, typeId);
+            return false;
+        }
+        if (added) _observable->Added(device, typeId);
         return true;
     }
 
     bool Unsubscribe(const DeviceIdentifier& device, StateTypeId typeId) {
         std::size_t index = 0;
         if (!TContract::TryIndexOf(typeId, index)) return false;
-        std::lock_guard<std::mutex> lock(_mutex);
-        auto* subscriber = FindLocked(device);
-        if (subscriber == nullptr) return false;
-        subscriber->States[index] = false;
-        return true;
+
+        bool removed = false;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            auto* subscriber = FindLocked(device);
+            if (subscriber == nullptr || !subscriber->States[index]) return false;
+            subscriber->States[index] = false;
+            removed = true;
+        }
+        if (removed) _observable->Removed(device, typeId);
+        return removed;
     }
 
     bool IsSubscribed(const DeviceIdentifier& device, StateTypeId typeId) const {
@@ -82,11 +162,16 @@ public:
     }
 
     bool Remove(const DeviceIdentifier& device) {
-        std::lock_guard<std::mutex> lock(_mutex);
-        auto* subscriber = FindLocked(device);
-        if (subscriber == nullptr) return false;
-        *subscriber = SubscriberRecord{};
-        return true;
+        bool removed = false;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            auto* subscriber = FindLocked(device);
+            if (subscriber == nullptr) return false;
+            *subscriber = SubscriberRecord{};
+            removed = true;
+        }
+        if (removed) _observable->DeviceRemoved(device);
+        return removed;
     }
 
     template<typename TCallback>
@@ -118,7 +203,9 @@ public:
             for (const auto& subscriber : _subscribers) {
                 if (!subscriber.Used || subscriber.Device != device) continue;
                 for (std::size_t index = 0; index < TContract::StateCount; ++index) {
-                    if (subscriber.States[index]) types[count++] = TContract::TypeIds[index];
+                    if (subscriber.States[index]) {
+                        types[count++] = TContract::TypeIds[index];
+                    }
                 }
                 break;
             }
