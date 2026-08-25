@@ -2,11 +2,16 @@
 
 #include <array>
 #include <cstddef>
+#include <memory>
+#include <mutex>
 #include <tuple>
 #include <type_traits>
 
+#include <ESPressio_ThreadSafeObservable.hpp>
+
 #include "ESPressio_DeviceIdentifier.hpp"
 #include "ESPressio_StateContract.hpp"
+#include "ESPressio_StateObservers.hpp"
 
 namespace ESPressio {
 namespace State {
@@ -27,6 +32,15 @@ struct RemoteStateSlot {
     bool HasValue = false;
 };
 
+template<typename TValue>
+struct RemoteStateSnapshot {
+    TValue Value{};
+    StateEpoch Epoch = 0;
+    StateRevision Revision = 0;
+    RemoteDeviceAvailability Availability = RemoteDeviceAvailability::Unknown;
+    bool HasValue = false;
+};
+
 template<typename TContract>
 struct RemoteStateTuple;
 
@@ -42,6 +56,79 @@ public:
     static constexpr std::size_t MaximumDevices = TMaximumDevices;
 
 private:
+    class ManagerObservable final : public Observable::ThreadSafeObservable {
+    public:
+        void DeviceRegistered(const DeviceIdentifier& identifier) {
+            ExecuteNotification([&](NotificationContext& notification) {
+                notification.WithObservers<IRemoteStateManagerObserver>(
+                    [&](IRemoteStateManagerObserver* observer) {
+                        observer->OnRemoteStateDeviceRegistered(identifier);
+                    }
+                );
+            });
+        }
+
+        void StateAccepted(
+            const DeviceIdentifier& identifier,
+            StateTypeId typeId,
+            StateEpoch epoch,
+            StateRevision revision,
+            bool changed
+        ) {
+            ExecuteNotification([&](NotificationContext& notification) {
+                notification.WithObservers<IRemoteStateManagerObserver>(
+                    [&](IRemoteStateManagerObserver* observer) {
+                        observer->OnRemoteStateAccepted(
+                            identifier,
+                            typeId,
+                            epoch,
+                            revision,
+                            changed
+                        );
+                    }
+                );
+            });
+        }
+
+        void StateRejected(
+            const DeviceIdentifier& identifier,
+            StateTypeId typeId,
+            StateEpoch epoch,
+            StateRevision revision
+        ) {
+            ExecuteNotification([&](NotificationContext& notification) {
+                notification.WithObservers<IRemoteStateManagerObserver>(
+                    [&](IRemoteStateManagerObserver* observer) {
+                        observer->OnRemoteStateRejected(
+                            identifier,
+                            typeId,
+                            epoch,
+                            revision
+                        );
+                    }
+                );
+            });
+        }
+
+        void AvailabilityChanged(
+            const DeviceIdentifier& identifier,
+            RemoteDeviceAvailability previous,
+            RemoteDeviceAvailability current
+        ) {
+            ExecuteNotification([&](NotificationContext& notification) {
+                notification.WithObservers<IRemoteStateManagerObserver>(
+                    [&](IRemoteStateManagerObserver* observer) {
+                        observer->OnRemoteStateAvailabilityChanged(
+                            identifier,
+                            previous,
+                            current
+                        );
+                    }
+                );
+            });
+        }
+    };
+
     struct DeviceRecord {
         bool Used = false;
         DeviceIdentifier Identifier{};
@@ -50,28 +137,36 @@ private:
     };
 
     std::array<DeviceRecord, TMaximumDevices> _devices{};
+    mutable std::recursive_mutex _mutex;
+    std::shared_ptr<ManagerObservable> _observable =
+        std::make_shared<ManagerObservable>();
 
-    DeviceRecord* Find(const DeviceIdentifier& identifier) {
+    DeviceRecord* FindLocked(const DeviceIdentifier& identifier) {
         for (auto& device : _devices) {
             if (device.Used && device.Identifier == identifier) return &device;
         }
         return nullptr;
     }
 
-    const DeviceRecord* Find(const DeviceIdentifier& identifier) const {
+    const DeviceRecord* FindLocked(const DeviceIdentifier& identifier) const {
         for (const auto& device : _devices) {
             if (device.Used && device.Identifier == identifier) return &device;
         }
         return nullptr;
     }
 
-    DeviceRecord* FindOrCreate(const DeviceIdentifier& identifier) {
+    DeviceRecord* FindOrCreateLocked(
+        const DeviceIdentifier& identifier,
+        bool& created
+    ) {
+        created = false;
         if (identifier.IsZero()) return nullptr;
-        if (auto* existing = Find(identifier)) return existing;
+        if (auto* existing = FindLocked(identifier)) return existing;
         for (auto& device : _devices) {
             if (!device.Used) {
                 device.Used = true;
                 device.Identifier = identifier;
+                created = true;
                 return &device;
             }
         }
@@ -79,20 +174,38 @@ private:
     }
 
 public:
-    template<typename TDefinition>
-    const RemoteStateSlot<StateValueType<TDefinition>>* Get(const DeviceIdentifier& identifier) const {
-        static_assert(TContract::template Contains<TDefinition>, "State definition is not part of this StateContract");
-        const auto* device = Find(identifier);
-        if (device == nullptr) return nullptr;
-        return &std::get<TContract::template IndexOf<TDefinition>()>(device->States);
+    Observable::ObserverHandlePtr RegisterObserver(
+        Observable::IObserver* observer
+    ) {
+        return _observable->RegisterObserver(observer);
+    }
+
+    void UnregisterObserver(Observable::IObserver* observer) {
+        _observable->UnregisterObserver(observer);
     }
 
     template<typename TDefinition>
-    RemoteStateSlot<StateValueType<TDefinition>>* Get(const DeviceIdentifier& identifier) {
-        static_assert(TContract::template Contains<TDefinition>, "State definition is not part of this StateContract");
-        auto* device = Find(identifier);
-        if (device == nullptr) return nullptr;
-        return &std::get<TContract::template IndexOf<TDefinition>()>(device->States);
+    bool Read(
+        const DeviceIdentifier& identifier,
+        RemoteStateSnapshot<StateValueType<TDefinition>>& snapshot
+    ) const {
+        static_assert(
+            TContract::template Contains<TDefinition>,
+            "State definition is not part of this StateContract"
+        );
+
+        std::lock_guard<std::recursive_mutex> lock(_mutex);
+        const auto* device = FindLocked(identifier);
+        if (device == nullptr) return false;
+
+        const auto& slot =
+            std::get<TContract::template IndexOf<TDefinition>()>(device->States);
+        snapshot.Value = slot.Value;
+        snapshot.Epoch = slot.Epoch;
+        snapshot.Revision = slot.Revision;
+        snapshot.HasValue = slot.HasValue;
+        snapshot.Availability = device->Availability;
+        return true;
     }
 
     template<typename TDefinition>
@@ -102,38 +215,103 @@ public:
         StateRevision revision,
         const StateValueType<TDefinition>& value
     ) {
-        static_assert(TContract::template Contains<TDefinition>, "State definition is not part of this StateContract");
-        auto* device = FindOrCreate(identifier);
-        if (device == nullptr || revision == 0) return false;
+        static_assert(
+            TContract::template Contains<TDefinition>,
+            "State definition is not part of this StateContract"
+        );
 
-        auto& slot = std::get<TContract::template IndexOf<TDefinition>()>(device->States);
-        if (slot.HasValue) {
-            if (epoch < slot.Epoch) return false;
-            if (epoch == slot.Epoch && revision <= slot.Revision) return false;
+        bool created = false;
+        bool changed = false;
+        bool accepted = false;
+
+        {
+            std::lock_guard<std::recursive_mutex> lock(_mutex);
+            auto* device = FindOrCreateLocked(identifier, created);
+            if (device == nullptr || revision == 0) {
+                accepted = false;
+            } else {
+                auto& slot =
+                    std::get<TContract::template IndexOf<TDefinition>()>(device->States);
+
+                if (
+                    slot.HasValue &&
+                    (epoch < slot.Epoch ||
+                     (epoch == slot.Epoch && revision <= slot.Revision))
+                ) {
+                    accepted = false;
+                } else {
+                    changed = !slot.HasValue || !(slot.Value == value);
+                    slot.Value = value;
+                    slot.Epoch = epoch;
+                    slot.Revision = revision;
+                    slot.HasValue = true;
+                    accepted = true;
+                }
+            }
         }
 
-        slot.Value = value;
-        slot.Epoch = epoch;
-        slot.Revision = revision;
-        slot.HasValue = true;
+        if (created) _observable->DeviceRegistered(identifier);
+
+        if (!accepted) {
+            _observable->StateRejected(
+                identifier,
+                StateTypeIdOf<TDefinition>,
+                epoch,
+                revision
+            );
+            return false;
+        }
+
+        _observable->StateAccepted(
+            identifier,
+            StateTypeIdOf<TDefinition>,
+            epoch,
+            revision,
+            changed
+        );
         return true;
     }
 
-    bool SetAvailability(const DeviceIdentifier& identifier, RemoteDeviceAvailability availability) {
-        auto* device = FindOrCreate(identifier);
-        if (device == nullptr) return false;
-        device->Availability = availability;
+    bool SetAvailability(
+        const DeviceIdentifier& identifier,
+        RemoteDeviceAvailability availability
+    ) {
+        bool created = false;
+        RemoteDeviceAvailability previous = RemoteDeviceAvailability::Unknown;
+        bool changed = false;
+
+        {
+            std::lock_guard<std::recursive_mutex> lock(_mutex);
+            auto* device = FindOrCreateLocked(identifier, created);
+            if (device == nullptr) return false;
+            previous = device->Availability;
+            changed = previous != availability;
+            device->Availability = availability;
+        }
+
+        if (created) _observable->DeviceRegistered(identifier);
+        if (changed) {
+            _observable->AvailabilityChanged(identifier, previous, availability);
+        }
         return true;
     }
 
-    RemoteDeviceAvailability GetAvailability(const DeviceIdentifier& identifier) const {
-        const auto* device = Find(identifier);
-        return device != nullptr ? device->Availability : RemoteDeviceAvailability::Unknown;
+    RemoteDeviceAvailability GetAvailability(
+        const DeviceIdentifier& identifier
+    ) const {
+        std::lock_guard<std::recursive_mutex> lock(_mutex);
+        const auto* device = FindLocked(identifier);
+        return device != nullptr
+            ? device->Availability
+            : RemoteDeviceAvailability::Unknown;
     }
 
     std::size_t GetDeviceCount() const {
+        std::lock_guard<std::recursive_mutex> lock(_mutex);
         std::size_t count = 0;
-        for (const auto& device : _devices) if (device.Used) ++count;
+        for (const auto& device : _devices) {
+            if (device.Used) ++count;
+        }
         return count;
     }
 };
