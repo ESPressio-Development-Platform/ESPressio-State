@@ -43,6 +43,33 @@ public:
     ) {}
 };
 
+template<typename TDefinition>
+class IRemoteStateObserver : public Observable::IObserver {
+public:
+    using Value = StateValueType<TDefinition>;
+
+    virtual ~IRemoteStateObserver() = default;
+
+    virtual void OnRemoteStateChanged(
+        const DeviceIdentifier&,
+        const Value&,
+        StateEpoch,
+        StateRevision,
+        RemoteDeviceAvailability
+    ) {}
+};
+
+class IRemoteDeviceAvailabilityObserver : public Observable::IObserver {
+public:
+    virtual ~IRemoteDeviceAvailabilityObserver() = default;
+
+    virtual void OnRemoteDeviceAvailabilityChanged(
+        const DeviceIdentifier&,
+        RemoteDeviceAvailability,
+        RemoteDeviceAvailability
+    ) {}
+};
+
 class IStateSubscriptionRegistryObserver : public Observable::IObserver {
 public:
     virtual ~IStateSubscriptionRegistryObserver() = default;
