@@ -12,14 +12,13 @@ namespace State {
 
 enum class RemoteDeviceAvailability : uint8_t;
 enum class StateSubscriptionScope : uint8_t;
+template<typename TValue> struct StateUpdate;
 
 class IRemoteStateManagerObserver : public Observable::IObserver {
 public:
     virtual ~IRemoteStateManagerObserver() = default;
 
-    virtual void OnRemoteStateDeviceRegistered(
-        const DeviceIdentifier&
-    ) {}
+    virtual void OnRemoteStateDeviceRegistered(const DeviceIdentifier&) {}
 
     virtual void OnRemoteStateAccepted(
         const DeviceIdentifier&,
@@ -47,7 +46,6 @@ template<typename TDefinition>
 class IRemoteStateObserver : public Observable::IObserver {
 public:
     using Value = StateValueType<TDefinition>;
-
     virtual ~IRemoteStateObserver() = default;
 
     virtual void OnRemoteStateChanged(
@@ -90,6 +88,30 @@ public:
         StateTypeId,
         StateSubscriptionScope,
         const DeviceIdentifier&
+    ) {}
+};
+
+class IStatePublisherObserver : public Observable::IObserver {
+public:
+    virtual ~IStatePublisherObserver() = default;
+
+    virtual void OnStateSourceRegistered(StateTypeId) {}
+    virtual void OnStateSourceUnregistered(StateTypeId) {}
+    virtual void OnStatePublished(
+        StateTypeId,
+        StateEpoch,
+        StateRevision
+    ) {}
+};
+
+template<typename TDefinition>
+class IStatePublishedObserver : public Observable::IObserver {
+public:
+    using Value = StateValueType<TDefinition>;
+    virtual ~IStatePublishedObserver() = default;
+
+    virtual void OnStatePublished(
+        const StateUpdate<Value>&
     ) {}
 };
 
