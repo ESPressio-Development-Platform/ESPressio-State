@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <tuple>
@@ -19,7 +20,6 @@ template<typename TDefinition>
 struct StateDefinitionTraits<TDefinition, std::void_t<typename TDefinition::Value>> {
     using Definition = TDefinition;
     using Value = typename TDefinition::Value;
-
     static constexpr StateTypeId Id = TDefinition::Id;
 };
 
@@ -34,6 +34,9 @@ class StateContract final {
 public:
     using Definitions = std::tuple<TDefinitions...>;
     static constexpr std::size_t StateCount = sizeof...(TDefinitions);
+    inline static constexpr std::array<StateTypeId, StateCount> TypeIds = {
+        StateTypeIdOf<TDefinitions>...
+    };
 
     template<typename TDefinition>
     static constexpr bool Contains = (std::is_same_v<TDefinition, TDefinitions> || ...);
@@ -43,6 +46,27 @@ public:
         static_assert(Contains<TDefinition>, "State definition is not part of this StateContract");
         return IndexOfImpl<TDefinition, 0, TDefinitions...>();
     }
+
+    static bool TryIndexOf(StateTypeId typeId, std::size_t& index) noexcept {
+        for (std::size_t candidate = 0; candidate < StateCount; ++candidate) {
+            if (TypeIds[candidate] == typeId) {
+                index = candidate;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static constexpr bool HasUniqueTypeIds() noexcept {
+        for (std::size_t left = 0; left < StateCount; ++left) {
+            for (std::size_t right = left + 1; right < StateCount; ++right) {
+                if (TypeIds[left] == TypeIds[right]) return false;
+            }
+        }
+        return true;
+    }
+
+    static_assert(HasUniqueTypeIds(), "StateContract contains duplicate StateTypeId values");
 
 private:
     template<typename TDefinition, std::size_t Index, typename TCurrent, typename... TRest>
