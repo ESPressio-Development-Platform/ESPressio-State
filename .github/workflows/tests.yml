@@ -1,0 +1,60 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+      - 'bugfix/**'
+      - 'optimisation/**'
+  pull_request:
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S tests -B build
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  esp32-compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Install PlatformIO
+        run: pip install platformio
+      - name: Create integration project
+        run: |
+          mkdir -p /tmp/state-integration/src
+          cat > /tmp/state-integration/platformio.ini <<'EOF'
+          [env:esp32dev]
+          platform = espressif32
+          board = esp32dev
+          framework = arduino
+          lib_deps =
+              file://${{ github.workspace }}
+          build_flags = -std=gnu++17
+          EOF
+          cat > /tmp/state-integration/src/main.cpp <<'EOF'
+          #include <Arduino.h>
+          #include <ESPressio_State.hpp>
+
+          struct LedState {
+              using Value = bool;
+              static constexpr ESPressio::State::StateTypeId Id = 1;
+          };
+          using Contract = ESPressio::State::StateContract<LedState>;
+          ESPressio::State::RemoteStateManager<Contract, 2> state;
+
+          void setup() {}
+          void loop() {}
+          EOF
+      - name: Compile ESP32 integration
+        run: pio run -d /tmp/state-integration
