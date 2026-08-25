@@ -1,0 +1,21 @@
+{
+    "name": "ESPressio-State",
+    "description": "Strongly typed distributed State infrastructure for the ESPressio Development Platform",
+    "keywords": "state,remote state,replication,subscription,typed,embedded,espressio",
+    "authors": {
+        "name": "Simon J. Stuart",
+        "maintainer": true,
+        "url": "https://espressio.org"
+    },
+    "build": {
+        "flags": ["-std=gnu++17","-DESPRESSIO_STATE"]
+    },
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/ESPressio-Development-Platform/ESPressio-State.git"
+    },
+    "version": "0.1.0",
+    "license": "Apache-2.0",
+    "frameworks": "arduino",
+    "platforms": "espressif32"
+}
