@@ -6,3 +6,4 @@
 #include "ESPressio_RemoteStateManager.hpp"
 #include "ESPressio_StateSubscription.hpp"
 #include "ESPressio_StateTransport.hpp"
+#include "ESPressio_StatePublisher.hpp"
