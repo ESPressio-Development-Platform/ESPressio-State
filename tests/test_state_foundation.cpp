@@ -24,10 +24,12 @@ class StateObserver final :
     public IStateSubscriptionRegistryObserver,
     public IStatePublisherObserver,
     public IStatePublishedObserver<FrontGyroscope>,
+    public IStatePublishedObserver<RearGyroscope>,
     public IStatePublicationObserver {
 public:
     int Devices = 0, Accepted = 0, Changed = 0, Rejected = 0, Availability = 0;
-    int Subscribed = 0, Unsubscribed = 0, Sources = 0, Published = 0, TypedPublished = 0;
+    int Subscribed = 0, Unsubscribed = 0, Sources = 0, Published = 0;
+    int FrontPublished = 0, RearPublished = 0;
     int Pending = 0, Superseded = 0, Acknowledged = 0, StaleAcknowledgements = 0;
 
     void OnRemoteStateDeviceRegistered(const DeviceIdentifier&) override { ++Devices; }
@@ -38,7 +40,8 @@ public:
     void OnStateUnsubscribed(StateTypeId, StateSubscriptionScope, const DeviceIdentifier&) override { ++Unsubscribed; }
     void OnStateSourceRegistered(StateTypeId) override { ++Sources; }
     void OnStatePublished(StateTypeId, StateEpoch, StateRevision) override { ++Published; }
-    void OnStatePublished(const StateUpdate<GyroscopeData>&) override { ++TypedPublished; }
+    void OnStatePublished(StateTag<FrontGyroscope>, const StateUpdate<GyroscopeData>&) override { ++FrontPublished; }
+    void OnStatePublished(StateTag<RearGyroscope>, const StateUpdate<GyroscopeData>&) override { ++RearPublished; }
     void OnStatePublicationPending(const DeviceIdentifier&, StateTypeId, StateEpoch, StateRevision) override { ++Pending; }
     void OnStatePublicationSuperseded(const DeviceIdentifier&, StateTypeId, StateEpoch, StateRevision, StateEpoch, StateRevision) override { ++Superseded; }
     void OnStatePublicationAcknowledged(const DeviceIdentifier&, StateTypeId, StateEpoch, StateRevision) override { ++Acknowledged; }
@@ -49,6 +52,7 @@ int main() {
     static_assert(Contract::StateCount == 3);
     static_assert(Contract::IndexOf<FrontGyroscope>() == 0);
     static_assert(Contract::IndexOf<RearGyroscope>() == 1);
+    static_assert(StateTag<FrontGyroscope>::Id != StateTag<RearGyroscope>::Id);
 
     const uint8_t mac[6] = {0x64,0xB7,0x08,0x85,0x63,0x3D};
     const uint8_t otherMac[6] = {0xD4,0xD4,0xDA,0x96,0x77,0x81};
@@ -86,9 +90,13 @@ int main() {
     StatePublisher<Contract> publisher(device, 7);
     auto publisherHandle = publisher.RegisterObserver(&observer);
     assert(publisher.RegisterSource<FrontGyroscope>([&] { return authoritative; }));
-    assert(observer.Sources == 1);
+    assert(publisher.RegisterSource<RearGyroscope>([&] { return GyroscopeData{30,31,32}; }));
+    assert(observer.Sources == 2);
     assert(publisher.Publish<FrontGyroscope>());
-    assert(observer.Published == 1 && observer.TypedPublished == 1);
+    assert(publisher.Publish<RearGyroscope>());
+    assert(observer.Published == 2);
+    assert(observer.FrontPublished == 1);
+    assert(observer.RearPublished == 1);
 
     StateUpdate<GyroscopeData> snapshot;
     assert(publisher.Snapshot<FrontGyroscope>(snapshot));
