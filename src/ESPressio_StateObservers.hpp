@@ -52,6 +52,15 @@ public:
     virtual void OnStateSubscriptionCapacityExhausted(StateTypeId, StateSubscriptionScope, const DeviceIdentifier&) {}
 };
 
+class IStateSubscriberRegistryObserver : public Observable::IObserver {
+public:
+    virtual ~IStateSubscriberRegistryObserver() = default;
+    virtual void OnRemoteStateSubscriberAdded(const DeviceIdentifier&, StateTypeId) {}
+    virtual void OnRemoteStateSubscriberRemoved(const DeviceIdentifier&, StateTypeId) {}
+    virtual void OnRemoteStateSubscriberDeviceRemoved(const DeviceIdentifier&) {}
+    virtual void OnRemoteStateSubscriberCapacityExhausted(const DeviceIdentifier&, StateTypeId) {}
+};
+
 class IStatePublisherObserver : public Observable::IObserver {
 public:
     virtual ~IStatePublisherObserver() = default;
