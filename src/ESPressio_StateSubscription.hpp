@@ -2,9 +2,13 @@
 
 #include <array>
 #include <cstddef>
+#include <memory>
+
+#include <ESPressio_ThreadSafeObservable.hpp>
 
 #include "ESPressio_DeviceIdentifier.hpp"
 #include "ESPressio_StateContract.hpp"
+#include "ESPressio_StateObservers.hpp"
 
 namespace ESPressio {
 namespace State {
@@ -39,6 +43,55 @@ struct StateSubscription final {
 
 template<std::size_t TCapacity>
 class StateSubscriptionRegistry final {
+    class RegistryObservable final : public Observable::ThreadSafeObservable {
+    public:
+        void Subscribed(
+            StateTypeId typeId,
+            StateSubscriptionScope scope,
+            const DeviceIdentifier& device
+        ) {
+            ExecuteNotification([&](NotificationContext& notification) {
+                notification.WithObservers<IStateSubscriptionRegistryObserver>(
+                    [&](IStateSubscriptionRegistryObserver* observer) {
+                        observer->OnStateSubscribed(typeId, scope, device);
+                    }
+                );
+            });
+        }
+
+        void Unsubscribed(
+            StateTypeId typeId,
+            StateSubscriptionScope scope,
+            const DeviceIdentifier& device
+        ) {
+            ExecuteNotification([&](NotificationContext& notification) {
+                notification.WithObservers<IStateSubscriptionRegistryObserver>(
+                    [&](IStateSubscriptionRegistryObserver* observer) {
+                        observer->OnStateUnsubscribed(typeId, scope, device);
+                    }
+                );
+            });
+        }
+
+        void CapacityExhausted(
+            StateTypeId typeId,
+            StateSubscriptionScope scope,
+            const DeviceIdentifier& device
+        ) {
+            ExecuteNotification([&](NotificationContext& notification) {
+                notification.WithObservers<IStateSubscriptionRegistryObserver>(
+                    [&](IStateSubscriptionRegistryObserver* observer) {
+                        observer->OnStateSubscriptionCapacityExhausted(
+                            typeId,
+                            scope,
+                            device
+                        );
+                    }
+                );
+            });
+        }
+    };
+
     struct Record {
         bool Used = false;
         StateTypeId TypeId = 0;
@@ -47,12 +100,27 @@ class StateSubscriptionRegistry final {
     };
 
     std::array<Record, TCapacity> _records{};
+    std::shared_ptr<RegistryObservable> _observable =
+        std::make_shared<RegistryObservable>();
 
 public:
     static constexpr std::size_t Capacity = TCapacity;
 
+    Observable::ObserverHandlePtr RegisterObserver(
+        Observable::IObserver* observer
+    ) {
+        return _observable->RegisterObserver(observer);
+    }
+
+    void UnregisterObserver(Observable::IObserver* observer) {
+        _observable->UnregisterObserver(observer);
+    }
+
     template<typename TDefinition>
-    bool Subscribe(const StateSubscription<TDefinition>& subscription = StateSubscription<TDefinition>::Any()) {
+    bool Subscribe(
+        const StateSubscription<TDefinition>& subscription =
+            StateSubscription<TDefinition>::Any()
+    ) {
         for (const auto& record : _records) {
             if (
                 record.Used &&
@@ -70,14 +138,28 @@ public:
                 record.TypeId = StateTypeIdOf<TDefinition>;
                 record.Scope = subscription.Scope;
                 record.Device = subscription.Device;
+                _observable->Subscribed(
+                    record.TypeId,
+                    record.Scope,
+                    record.Device
+                );
                 return true;
             }
         }
+
+        _observable->CapacityExhausted(
+            StateTypeIdOf<TDefinition>,
+            subscription.Scope,
+            subscription.Device
+        );
         return false;
     }
 
     template<typename TDefinition>
-    bool Unsubscribe(const StateSubscription<TDefinition>& subscription = StateSubscription<TDefinition>::Any()) {
+    bool Unsubscribe(
+        const StateSubscription<TDefinition>& subscription =
+            StateSubscription<TDefinition>::Any()
+    ) {
         for (auto& record : _records) {
             if (
                 record.Used &&
@@ -85,7 +167,11 @@ public:
                 record.Scope == subscription.Scope &&
                 record.Device == subscription.Device
             ) {
+                const StateTypeId typeId = record.TypeId;
+                const StateSubscriptionScope scope = record.Scope;
+                const DeviceIdentifier device = record.Device;
                 record = Record{};
+                _observable->Unsubscribed(typeId, scope, device);
                 return true;
             }
         }
@@ -98,7 +184,8 @@ public:
             if (
                 record.Used &&
                 record.TypeId == StateTypeIdOf<TDefinition> &&
-                (record.Scope == StateSubscriptionScope::AnyDevice || record.Device == device)
+                (record.Scope == StateSubscriptionScope::AnyDevice ||
+                 record.Device == device)
             ) {
                 return true;
             }
@@ -108,7 +195,9 @@ public:
 
     std::size_t Count() const {
         std::size_t count = 0;
-        for (const auto& record : _records) if (record.Used) ++count;
+        for (const auto& record : _records) {
+            if (record.Used) ++count;
+        }
         return count;
     }
 };
