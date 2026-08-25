@@ -74,6 +74,7 @@ private:
                 notification.WithObservers<IRemoteStateObserver<TDefinition>>(
                     [&](IRemoteStateObserver<TDefinition>* observer) {
                         observer->OnRemoteStateChanged(
+                            StateTag<TDefinition>{},
                             device,
                             value,
                             epoch,
@@ -113,17 +114,10 @@ private:
     std::mutex _dirtyMutex;
     bool _prepared = false;
 
-    void MarkStateDirty(
-        const DeviceIdentifier& device,
-        StateTypeId typeId
-    ) {
+    void MarkStateDirty(const DeviceIdentifier& device, StateTypeId typeId) {
         std::lock_guard<std::mutex> lock(_dirtyMutex);
         for (const auto& record : _dirtyStates) {
-            if (
-                record.Used &&
-                record.Device == device &&
-                record.TypeId == typeId
-            ) {
+            if (record.Used && record.Device == device && record.TypeId == typeId) {
                 return;
             }
         }
@@ -184,7 +178,6 @@ private:
                 }
                 return;
             }
-
             NotifyState<TIndex + 1>(dirty);
         }
     }
@@ -192,7 +185,6 @@ private:
     void Drain() {
         std::array<DirtyState, MaximumDirtyStates> dirtyStates{};
         std::array<DirtyAvailability, TMaximumDevices> dirtyAvailability{};
-
         {
             std::lock_guard<std::mutex> lock(_dirtyMutex);
             dirtyStates = _dirtyStates;
@@ -200,16 +192,10 @@ private:
             _dirtyStates = {};
             _dirtyAvailability = {};
         }
-
         for (const auto& record : dirtyAvailability) {
             if (!record.Used) continue;
-            _observable->AvailabilityChanged(
-                record.Device,
-                record.Previous,
-                record.Current
-            );
+            _observable->AvailabilityChanged(record.Device, record.Previous, record.Current);
         }
-
         for (const auto& record : dirtyStates) {
             if (!record.Used) continue;
             NotifyState(record);
@@ -217,22 +203,12 @@ private:
     }
 
 protected:
-    void OnWorkWake() override {
-        Drain();
-    }
-
-    void Iterate(
-        Time,
-        Time,
-        Threads::SkippedIterationCount
-    ) override {
-        Drain();
-    }
+    void OnWorkWake() override { Drain(); }
+    void Iterate(Time, Time, Threads::SkippedIterationCount) override { Drain(); }
 
 public:
     explicit RemoteStateObserverThread(Manager& manager)
-        : Base(),
-          _manager(manager) {
+        : Base(), _manager(manager) {
         this->SetStartOnInitialize(false);
         this->SetStackSize(ESPRESSIO_STATE_OBSERVER_THREAD_STACK_SIZE);
         this->SetPriority(ESPRESSIO_STATE_OBSERVER_THREAD_PRIORITY);
@@ -252,13 +228,9 @@ public:
         this->Shutdown();
     }
 
-    bool IsPrepared() const noexcept {
-        return _prepared;
-    }
+    bool IsPrepared() const noexcept { return _prepared; }
 
-    Observable::ObserverHandlePtr RegisterObserver(
-        Observable::IObserver* observer
-    ) {
+    Observable::ObserverHandlePtr RegisterObserver(Observable::IObserver* observer) {
         return _observable->RegisterObserver(observer);
     }
 
@@ -284,11 +256,6 @@ public:
         RemoteDeviceAvailability current
     ) override {
         MarkAvailabilityDirty(device, previous, current);
-
-        // Availability is part of the observer context. Re-notify every
-        // subscribed contract State that currently has a value so application
-        // observers can react to Connected/Stale/Disconnected/ConnectionLost
-        // without copying remote State elsewhere.
         MarkAllStatesDirty(device);
         this->WakeForWork();
     }
