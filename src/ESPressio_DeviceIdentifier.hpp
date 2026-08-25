@@ -26,11 +26,14 @@ public:
             return DeviceIdentifier(bytes);
         }
 
-        // MAC addresses remain recognisable while occupying the common
-        // transport-neutral 128-bit identifier representation.
-        bytes[10] = 0xFF;
-        bytes[11] = 0xFF;
-        std::memcpy(bytes.data() + 12, macAddress, 6);
+        // Preserve the 48-bit MAC address exactly while reserving an explicit
+        // namespace marker inside the common 128-bit identifier. The remaining
+        // bytes are zero so this mapping is deterministic and reversible.
+        bytes[0] = 'M';
+        bytes[1] = 'A';
+        bytes[2] = 'C';
+        bytes[3] = 1;
+        std::memcpy(bytes.data() + 10, macAddress, 6);
         return DeviceIdentifier(bytes);
     }
 
