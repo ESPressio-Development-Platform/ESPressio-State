@@ -6,4 +6,8 @@ set(COMPONENT_ADD_INCLUDEDIRS
     "src"
 )
 
+set(COMPONENT_REQUIRES
+    "ESPressio_Observable"
+)
+
 register_component()
