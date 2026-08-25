@@ -29,6 +29,13 @@ using StateValueType = typename StateDefinitionTraits<TDefinition>::Value;
 template<typename TDefinition>
 inline constexpr StateTypeId StateTypeIdOf = StateDefinitionTraits<TDefinition>::Id;
 
+template<typename TDefinition>
+struct StateTag final {
+    using Definition = TDefinition;
+    using Value = StateValueType<TDefinition>;
+    static constexpr StateTypeId Id = StateTypeIdOf<TDefinition>;
+};
+
 template<typename... TDefinitions>
 class StateContract final {
 public:
