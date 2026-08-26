@@ -118,7 +118,7 @@ int main() {
 
     GyroscopeData authoritative{20,21,22};
     StatePublisher<Contract> publisher(device, 7);
-    auto publisherHandle = publisher.RegisterObserver(static_cast<IStatePublisherObserver*>(&observer));
+    auto publisherHandle = publisher.RegisterContractObserver(&observer);
     assert(publisher.RegisterSource<FrontGyroscope>([&] { return authoritative; }));
     assert(publisher.RegisterSource<RearGyroscope>([&] { return GyroscopeData{30,31,32}; }));
     assert(observer.Sources == 2);
@@ -144,18 +144,19 @@ int main() {
     assert(StateProtocol::DecodeValue<FrontGyroscope>(parsed, decoded));
     assert(decoded == authoritative);
 
-    StatePublicationTracker<FrontGyroscope> tracker(otherDevice);
-    auto trackerHandle = tracker.RegisterObserver(static_cast<IStatePublicationObserver*>(&observer));
-    assert(tracker.Replace(7, 1, {1,1,1}));
+    StatePublicationTracker tracker;
+    auto publicationHandle = tracker.RegisterObserver(static_cast<IStatePublicationObserver*>(&observer));
+    assert(tracker.MarkPending(otherDevice, snapshot.Header));
     assert(observer.Pending == 1);
-    assert(tracker.Replace(7, 2, {2,2,2}));
-    assert(observer.Superseded == 1);
-    assert(tracker.Acknowledge(7, 1));
-    assert(tracker.PendingUpdate().Pending);
+    StateHeader newer = snapshot.Header;
+    newer.Revision = 2;
+    assert(tracker.MarkPending(otherDevice, newer));
+    assert(observer.Superseded == 1 && observer.Pending == 2);
+    assert(tracker.Acknowledge(otherDevice, StateTypeIdOf<FrontGyroscope>, 7, 1) == StateAcknowledgementResult::Stale);
     assert(observer.StaleAcknowledgements == 1);
-    assert(tracker.Acknowledge(7, 2));
-    assert(!tracker.PendingUpdate().Pending);
+    assert(tracker.Acknowledge(otherDevice, StateTypeIdOf<FrontGyroscope>, 7, 2) == StateAcknowledgementResult::Acknowledged);
     assert(observer.Acknowledged == 1);
+    assert(tracker.PendingCount() == 0);
 
     return 0;
 }
