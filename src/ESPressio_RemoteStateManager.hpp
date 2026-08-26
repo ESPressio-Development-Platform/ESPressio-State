@@ -11,7 +11,6 @@
 
 #include "ESPressio_DeviceIdentifier.hpp"
 #include "ESPressio_StateContract.hpp"
-#include "ESPressio_StateComparison.hpp"
 #include "ESPressio_StateObservers.hpp"
 
 namespace ESPressio {
@@ -212,7 +211,11 @@ public:
                      (epoch == slot.Epoch && revision <= slot.Revision))) {
                     accepted = false;
                 } else {
-                    changed = !slot.HasValue || StateValueChanged<TDefinition>(slot.Value, value);
+                    // The origin decides meaningful-change semantics before it
+                    // publishes a new revision. A receiver must not re-apply a
+                    // local deadband to that authoritative decision because its
+                    // comparison baseline can differ after join/resync.
+                    changed = !slot.HasValue || !(slot.Value == value);
                     slot.Value = value;
                     slot.Epoch = epoch;
                     slot.Revision = revision;
@@ -264,9 +267,6 @@ public:
         return count;
     }
 
-    // Allocation-free snapshot traversal. Callbacks execute outside the
-    // repository lock and therefore cannot retain references into repository
-    // storage. This is useful for diagnostics and other read-only enumeration.
     template<typename TCallback>
     void ForEachDevice(TCallback&& callback) const {
         std::array<RemoteDeviceSnapshot, TMaximumDevices> snapshots{};
