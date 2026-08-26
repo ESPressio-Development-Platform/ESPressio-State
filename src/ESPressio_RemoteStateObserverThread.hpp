@@ -60,12 +60,20 @@ private:
         RemoteDeviceAvailability Current = RemoteDeviceAvailability::Unknown;
     };
 
+    struct DeliveredDevice {
+        bool Used = false;
+        DeviceIdentifier Device{};
+        typename RemoteStateTuple<TContract>::Type States{};
+    };
+
     class DispatchObservable final : public Observable::ThreadSafeObservable {
     public:
         template<typename TDefinition>
         void StateChanged(
             const DeviceIdentifier& device,
-            const StateValueType<TDefinition>& value,
+            bool hasPreviousValue,
+            const StateValueType<TDefinition>& previousValue,
+            const StateValueType<TDefinition>& latestValue,
             StateEpoch epoch,
             StateRevision revision,
             RemoteDeviceAvailability availability
@@ -76,7 +84,9 @@ private:
                         observer->OnRemoteStateChanged(
                             StateTag<TDefinition>{},
                             device,
-                            value,
+                            hasPreviousValue,
+                            previousValue,
+                            latestValue,
                             epoch,
                             revision,
                             availability
@@ -109,10 +119,25 @@ private:
     Observable::ObserverHandlePtr _managerHandle;
     std::array<DirtyState, MaximumDirtyStates> _dirtyStates{};
     std::array<DirtyAvailability, TMaximumDevices> _dirtyAvailability{};
+    std::array<DeliveredDevice, TMaximumDevices> _delivered{};
     std::shared_ptr<DispatchObservable> _observable =
         std::make_shared<DispatchObservable>();
     std::mutex _dirtyMutex;
     bool _prepared = false;
+
+    DeliveredDevice* FindOrCreateDelivered(const DeviceIdentifier& device) {
+        for (auto& record : _delivered) {
+            if (record.Used && record.Device == device) return &record;
+        }
+        for (auto& record : _delivered) {
+            if (!record.Used) {
+                record.Used = true;
+                record.Device = device;
+                return &record;
+            }
+        }
+        return nullptr;
+    }
 
     void MarkStateDirty(const DeviceIdentifier& device, StateTypeId typeId) {
         std::lock_guard<std::mutex> lock(_dirtyMutex);
@@ -161,20 +186,36 @@ private:
                 TIndex,
                 typename TContract::Definitions
             >::type;
+            using Value = StateValueType<Definition>;
 
             if (dirty.TypeId == StateTypeIdOf<Definition>) {
-                RemoteStateSnapshot<StateValueType<Definition>> snapshot;
+                RemoteStateSnapshot<Value> snapshot;
                 if (
                     _manager.template Read<Definition>(dirty.Device, snapshot) &&
                     snapshot.HasValue
                 ) {
-                    _observable->template StateChanged<Definition>(
-                        dirty.Device,
-                        snapshot.Value,
-                        snapshot.Epoch,
-                        snapshot.Revision,
-                        snapshot.Availability
-                    );
+                    bool hasPreviousValue = false;
+                    Value previousValue{};
+                    if (auto* delivered = FindOrCreateDelivered(dirty.Device)) {
+                        auto& previous = std::get<TIndex>(delivered->States);
+                        hasPreviousValue = previous.HasValue;
+                        if (hasPreviousValue) previousValue = previous.Value;
+
+                        _observable->template StateChanged<Definition>(
+                            dirty.Device,
+                            hasPreviousValue,
+                            previousValue,
+                            snapshot.Value,
+                            snapshot.Epoch,
+                            snapshot.Revision,
+                            snapshot.Availability
+                        );
+
+                        previous.Value = snapshot.Value;
+                        previous.Epoch = snapshot.Epoch;
+                        previous.Revision = snapshot.Revision;
+                        previous.HasValue = true;
+                    }
                 }
                 return;
             }
@@ -217,7 +258,9 @@ public:
 
     bool Prepare() {
         if (_prepared) return true;
-        _managerHandle = _manager.RegisterObserver(this);
+        _managerHandle = _manager.RegisterObserver(
+            static_cast<IRemoteStateManagerObserver*>(this)
+        );
         _prepared = static_cast<bool>(_managerHandle);
         return _prepared;
     }
@@ -225,6 +268,7 @@ public:
     void ShutdownObserverThread() {
         _managerHandle.reset();
         _prepared = false;
+        _delivered = {};
         this->Shutdown();
     }
 
