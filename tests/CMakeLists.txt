@@ -28,3 +28,14 @@ target_include_directories(test_state_foundation PRIVATE
 )
 
 add_test(NAME state_foundation COMMAND test_state_foundation)
+
+add_executable(test_state_introspection
+    test_state_introspection.cpp
+)
+
+target_include_directories(test_state_introspection PRIVATE
+    ../src
+    ${ESPRESSIO_OBSERVABLE_DIR}
+)
+
+add_test(NAME state_introspection COMMAND test_state_introspection)
