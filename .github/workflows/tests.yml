@@ -14,10 +14,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout Observable
+      - name: Checkout Observable working branch
         uses: actions/checkout@v4
         with:
           repository: ESPressio-Development-Platform/ESPressio-Observable
+          ref: feature/16-rtti-free-observer-registry
           path: ESPressio-Observable
       - name: Configure
         run: >-
@@ -36,7 +37,7 @@ jobs:
         with:
           python-version: '3.x'
       - run: pip install platformio
-      - name: Create core integration project
+      - name: Create RTTI-free core integration project
         run: |
           mkdir -p /tmp/state-core/src
           cat > /tmp/state-core/platformio.ini <<'EOF'
@@ -46,12 +47,12 @@ jobs:
           framework = arduino
           lib_deps =
               file://${{ github.workspace }}
+              https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#feature/16-rtti-free-observer-registry
           build_unflags =
               -std=gnu++11
-              -fno-rtti
           build_flags =
               -std=gnu++17
-              -frtti
+              -fno-rtti
           EOF
           cat > /tmp/state-core/src/main.cpp <<'EOF'
           #include <Arduino.h>
@@ -77,7 +78,7 @@ jobs:
         with:
           python-version: '3.x'
       - run: pip install platformio
-      - name: Create diagnostic integration project
+      - name: Create RTTI-free diagnostic integration project
         run: |
           mkdir -p /tmp/state-diagnostics/src
           cat > /tmp/state-diagnostics/platformio.ini <<'EOF'
@@ -87,12 +88,12 @@ jobs:
           framework = arduino
           lib_deps =
               file://${{ github.workspace }}
+              https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#feature/16-rtti-free-observer-registry
           build_unflags =
               -std=gnu++11
-              -fno-rtti
           build_flags =
               -std=gnu++17
-              -frtti
+              -fno-rtti
           EOF
           cat > /tmp/state-diagnostics/src/main.cpp <<'EOF'
           #include <Arduino.h>
@@ -144,7 +145,7 @@ jobs:
         with:
           python-version: '3.x'
       - run: pip install platformio
-      - name: Create observer integration project
+      - name: Create RTTI-free observer integration project
         run: |
           mkdir -p /tmp/state-observer/src
           cat > /tmp/state-observer/platformio.ini <<'EOF'
@@ -154,13 +155,13 @@ jobs:
           framework = arduino
           lib_deps =
               file://${{ github.workspace }}
-              https://github.com/ESPressio-Development-Platform/ESPressio-Threads.git#optimisation/69-resource-footprint
+              https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#feature/16-rtti-free-observer-registry
+              https://github.com/ESPressio-Development-Platform/ESPressio-Threads.git#feature/73-memory-efficiency
           build_unflags =
               -std=gnu++11
-              -fno-rtti
           build_flags =
               -std=gnu++17
-              -frtti
+              -fno-rtti
           EOF
           cat > /tmp/state-observer/src/main.cpp <<'EOF'
           #include <Arduino.h>
