@@ -84,8 +84,13 @@ private:
 public:
     static constexpr std::size_t Capacity = TCapacity;
 
-    Observable::ObserverHandlePtr RegisterObserver(Observable::IObserver* observer) { return _observable->RegisterObserver(observer); }
-    void UnregisterObserver(Observable::IObserver* observer) { _observable->UnregisterObserver(observer); }
+    Observable::ObserverHandlePtr RegisterObserver(IStateSubscriptionRegistryObserver* observer) {
+        return _observable->RegisterObserver(observer);
+    }
+
+    void UnregisterObserver(IStateSubscriptionRegistryObserver* observer) {
+        _observable->UnregisterObserver(observer);
+    }
 
     template<typename TDefinition>
     bool Subscribe(const StateSubscription<TDefinition>& subscription = StateSubscription<TDefinition>::Any()) {
@@ -126,14 +131,18 @@ public:
         return false;
     }
 
-    template<typename TDefinition>
-    bool IsSubscribed(const DeviceIdentifier& device) const {
+    bool IsSubscribed(const DeviceIdentifier& device, StateTypeId typeId) const {
         std::lock_guard<std::mutex> lock(_mutex);
         for (const auto& record : _records) {
-            if (record.Used && record.Subscription.TypeId == StateTypeIdOf<TDefinition> &&
+            if (record.Used && record.Subscription.TypeId == typeId &&
                 (record.Subscription.Scope == StateSubscriptionScope::AnyDevice || record.Subscription.Device == device)) return true;
         }
         return false;
+    }
+
+    template<typename TDefinition>
+    bool IsSubscribed(const DeviceIdentifier& device) const {
+        return IsSubscribed(device, StateTypeIdOf<TDefinition>);
     }
 
     std::size_t Count() const {
