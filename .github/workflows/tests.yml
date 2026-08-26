@@ -56,6 +56,10 @@ jobs:
           cat > /tmp/state-core/src/main.cpp <<'EOF'
           #include <Arduino.h>
           #include <ESPressio_State.hpp>
+          #define ESPRESSIO_STATE_ENABLE_INTROSPECTION 0
+          #define ESPRESSIO_STATE_ENABLE_SERIALIZATION 0
+          #include <ESPressio_StateIntrospection.hpp>
+          #include <ESPressio_StateSerialization.hpp>
           struct LedState { using Value = bool; static constexpr ESPressio::State::StateTypeId Id = 1; };
           using Contract = ESPressio::State::StateContract<LedState>;
           ESPressio::State::RemoteStateManager<Contract, 2> remoteState;
@@ -64,6 +68,73 @@ jobs:
           void loop() {}
           EOF
       - run: pio run -d /tmp/state-core
+
+  esp32-diagnostics:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: pip install platformio
+      - name: Create diagnostic integration project
+        run: |
+          mkdir -p /tmp/state-diagnostics/src
+          cat > /tmp/state-diagnostics/platformio.ini <<'EOF'
+          [env:esp32dev]
+          platform = espressif32
+          board = esp32dev
+          framework = arduino
+          lib_deps =
+              file://${{ github.workspace }}
+          build_unflags =
+              -std=gnu++11
+              -fno-rtti
+          build_flags =
+              -std=gnu++17
+              -frtti
+          EOF
+          cat > /tmp/state-diagnostics/src/main.cpp <<'EOF'
+          #include <Arduino.h>
+          #include <ESPressio_State.hpp>
+          #include <ESPressio_StateIntrospection.hpp>
+          #include <ESPressio_StateSerialization.hpp>
+
+          struct LedState {
+              using Value = bool;
+              static constexpr ESPressio::State::StateTypeId Id = 1;
+              static constexpr const char* Name = "led.enabled";
+          };
+          struct CounterState {
+              using Value = uint32_t;
+              static constexpr ESPressio::State::StateTypeId Id = 2;
+          };
+          using Contract = ESPressio::State::StateContract<LedState, CounterState>;
+          ESPressio::State::RemoteStateManager<Contract, 2> remoteState;
+
+          void setup() {
+              const uint8_t mac[6] = {1, 2, 3, 4, 5, 6};
+              const auto device = ESPressio::State::DeviceIdentifier::FromMacAddress(mac);
+              remoteState.Apply<LedState>(device, 1, 1, true);
+              remoteState.Apply<CounterState>(device, 1, 1, 42);
+
+              const char* name = nullptr;
+              ESPressio::State::StateIntrospection<Contract>::TryGetName(
+                  LedState::Id,
+                  name
+              );
+
+              ESPressio::State::StateSerialization<Contract>::ForEachRemoteState(
+                  remoteState,
+                  [](const auto& record) {
+                      (void)record.TypeId;
+                      (void)record.PayloadSize;
+                  }
+              );
+          }
+          void loop() {}
+          EOF
+      - run: pio run -d /tmp/state-diagnostics
 
   esp32-observer-thread:
     runs-on: ubuntu-latest
