@@ -2,15 +2,27 @@
 
 Strongly typed distributed State infrastructure for the ESPressio Development Platform.
 
-ESPressio State provides a transport-neutral way for embedded devices to publish authoritative State snapshots and maintain typed replicas of subscribed State from remote devices without treating State as a Command or Event.
+ESPressio State communicates **what is true now**. It is deliberately distinct from Command execution and Event history: obsolete intermediate State is disposable, while the latest authoritative value matters.
 
 ## Current Version — 0.1.0
 
-State 0.1.0 is the initial mutable development release. The current working branch establishes transport-neutral device identity, compile-time State contracts, and a fixed-capacity typed `RemoteStateManager`. Publication, subscriptions, acknowledgements, availability, observation, optional introspection, and concrete transport adapters are tracked as separate feature issues and are being added incrementally on the same working branch.
+`0.1.0` remains the active development version on `feature/1-state-foundation`. No release/version cascade is being performed while this architecture is being completed.
 
-# Why a State primitive?
+The current branch includes:
 
-Distributed applications frequently need to communicate **what is true now**, rather than instructing another device to perform an operation or preserving every historical transition.
+- transport-neutral 128-bit `DeviceIdentifier` values;
+- compiler-backed `StateContract<...>` definitions and `StateTag<TDefinition>` identities;
+- fixed-capacity, typed `RemoteStateManager` repositories;
+- source-backed `StatePublisher` publication without a duplicate local State repository;
+- fixed-capacity local subscription and remote-subscriber registries;
+- epoch/revision ordering and latest-only publication tracking;
+- compact transport-neutral update, ACK, subscription, resynchronisation and disconnect messages;
+- synchronous ESPressio Observable lifecycle notifications throughout the State components;
+- an optional ESPressio Threads-backed coalesced application-observer execution layer;
+- an optional ESP-NOW transport adapter in ESPressio-ESP-Now;
+- optional State logging observers in ESPressio-Serial.
+
+# Semantics
 
 ```text
 Command
@@ -23,41 +35,59 @@ State
     "This is true now."
 ```
 
-State is deliberately **latest-value oriented**. If a value changes several times before a remote device consumes it, obsolete intermediate values do not need to be preserved merely for delivery completeness.
+A State publisher may move rapidly through revisions:
 
 ```text
-Local changes
-    v10 -> v11 -> v12 -> v13
-
-Remote State needs
-    latest authoritative value: v13
+v10 -> v11 -> v12 -> v13
 ```
 
-This allows State transport and storage to coalesce obsolete updates rather than behaving like a FIFO work queue.
+A consumer that has not yet processed those changes normally needs `v13`, not a historical queue containing `v10`, `v11`, and `v12`. ESPressio State therefore permits pending work and observer notifications to be **coalesced around the newest revision**.
 
-## Authoritative local State remains locally owned
+If every transition must be preserved, use Event. If another component must perform an operation, use Command.
 
-ESPressio State does **not** require an application to centralize or duplicate its authoritative local State.
+# Authoritative local State remains locally owned
 
-A camera controller, sensor, motor driver, application service, or other domain object continues to own its State in the implementation that naturally owns that information.
+State does not require a `LocalStateManager` and does not require application/domain objects to relocate their canonical data.
 
 ```text
 CameraController
-    owns local implementation data
-           |
-           | produces a State snapshot
-           v
-    FrontCamera::Value
-           |
-           v
-       State publisher
+    owns authoritative camera data
+             |
+             | typed snapshot accessor
+             v
+       StatePublisher
+             |
+             v
+          transport
 ```
 
-Only the shared State definition and its `Value` representation form the contract between devices.
+For example:
 
-## State definitions are compiler-backed contracts
+```cpp
+StatePublisher<DeviceStateContract> publisher(localDevice);
 
-A State definition identifies one logical State and declares the type used to represent it remotely:
+publisher.RegisterSource<FrontCamera>([&camera] {
+    return camera.GetRemoteStateSnapshot();
+});
+```
+
+When the owner changes:
+
+```cpp
+publisher.Publish<FrontCamera>();
+```
+
+The publisher asks the owner for the current snapshot and advances the State revision. `Snapshot<TDefinition>()` similarly obtains a fresh source-backed value for initial synchronisation or resynchronisation.
+
+A caller may also publish an explicit typed value:
+
+```cpp
+publisher.Publish<FrontCamera>(currentValue);
+```
+
+# State definitions and contracts
+
+Each logical State has an independent compile-time definition:
 
 ```cpp
 struct GyroscopeData {
@@ -75,319 +105,316 @@ struct RearGyroscope {
     using Value = GyroscopeData;
     static constexpr ESPressio::State::StateTypeId Id = 0x1002;
 };
-```
 
-`FrontGyroscope` and `RearGyroscope` use the same payload type but remain completely independent State identities.
-
-No arbitrary runtime string key is required by the core State API.
-
-## Compound State is atomic
-
-State is not limited to scalar values. A compound object such as gyroscope axes, position coordinates, camera status, or motor telemetry is treated as one logical State snapshot.
-
-Remote storage replaces the complete typed object as one operation, so observers never need to see an unintended mixture such as new X with old Y and old Z.
-
-## Stale State is intentionally disposable
-
-State is different from Event history.
-
-Older revisions must never overwrite newer State, and future transport work will deliberately supersede stale pending updates when a newer authoritative value exists.
-
-If every intermediate transition matters, use an Event. If execution matters, use a Command.
-
-# ESPressio Development Platform
-
-ESPressio libraries are designed to be light-weight, strongly typed, object-oriented, composable, and to follow SOLID dependency boundaries wherever practical on embedded C++ targets.
-
-State follows those goals by keeping the core contract/storage layer transport-neutral and allocation-conscious while allowing concrete transports to live in the libraries that own those transports.
-
-## License
-
-Licensed under the Apache License 2.0. See [LICENSE](LICENSE).
-
-# Namespace
-
-```cpp
-ESPressio::State
-```
-
-Important public concepts currently include:
-
-- `DeviceIdentifier` — fixed 128-bit transport-neutral device identity.
-- `StateTypeId`, `StateRevision`, and `StateEpoch`.
-- `StateContract<...>` — compile-time collection of supported State definitions.
-- `StateValueType<TDefinition>` — payload type associated with a State definition.
-- `RemoteStateManager<TContract, TMaximumDevices>` — fixed-capacity typed repository of replicated remote State.
-- `RemoteStateSlot<T>` — latest known value plus epoch/revision metadata.
-- `RemoteDeviceAvailability` — availability metadata retained independently from State values.
-
-# Dependencies
-
-The current State foundation is dependency-free beyond C++17.
-
-This is intentional. Transport-neutral State contracts and remote storage do not require Threads, Event, Observable, Serializable, ESP-NOW, WiFi, or Serial.
-
-Later features will consume ESPressio dependencies only where their responsibilities genuinely require them.
-
-# Installation
-
-During active development, consume the working branch directly:
-
-```ini
-lib_deps =
-    https://github.com/ESPressio-Development-Platform/ESPressio-State.git#feature/1-state-foundation
-```
-
-The current implementation requires C++17.
-
-# Defining a State contract
-
-Define the shared transport representation separately from the class that owns authoritative local State.
-
-```cpp
-#include <ESPressio_State.hpp>
-
-using namespace ESPressio::State;
-
-struct CameraStateData {
-    bool Connected = false;
-    float Zoom = 0.0f;
-    float FocusDistance = 0.0f;
-};
-
-struct FrontCamera {
-    using Value = CameraStateData;
-    static constexpr StateTypeId Id = 0x2001;
-};
-
-struct RearCamera {
-    using Value = CameraStateData;
-    static constexpr StateTypeId Id = 0x2002;
-};
-
-using DeviceStateContract = StateContract<
-    FrontCamera,
-    RearCamera
+using DeviceStateContract = ESPressio::State::StateContract<
+    FrontGyroscope,
+    RearGyroscope
 >;
 ```
 
-The contract automatically knows its number of State definitions:
+`FrontGyroscope` and `RearGyroscope` deliberately share a payload type but remain different State identities. `StateTag<TDefinition>` preserves that distinction in typed observer callbacks as well as repository access.
+
+No runtime string key is required by the core State path.
+
+# Device identity
+
+`DeviceIdentifier` is a transport-neutral 128-bit identity.
+
+For MAC-addressed devices:
 
 ```cpp
-static_assert(DeviceStateContract::StateCount == 2);
+uint8_t mac[6] = {0x64, 0xB7, 0x08, 0x85, 0x63, 0x3D};
+DeviceIdentifier device = DeviceIdentifier::FromMacAddress(mac);
 ```
 
-The application does not separately specify a maximum number of State keys.
+The mapping retains the MAC address reversibly while keeping ESP-NOW/WiFi types outside the State API.
 
-# Authoritative local storage does not need to use the State type
+# Remote State repository
 
-The origin device remains free to organize its domain implementation naturally:
-
-```cpp
-class CameraController {
-private:
-    bool _connected = false;
-    float _zoom = 1.0f;
-    float _focusDistance = 2.5f;
-
-public:
-    FrontCamera::Value GetRemoteStateSnapshot() const {
-        return {
-            _connected,
-            _zoom,
-            _focusDistance
-        };
-    }
-};
-```
-
-The only shared contract is `FrontCamera` and `FrontCamera::Value`.
-
-Future publication APIs will allow the authoritative owner to publish that typed snapshot when its State changes without relocating the owner's data into a central local repository.
-
-# Creating a fixed-capacity Remote State repository
-
-The maximum number of remote devices is an explicit compile-time decision:
+Remote State capacity is explicit and deterministic:
 
 ```cpp
 RemoteStateManager<DeviceStateContract, 8> remoteState;
 ```
 
-The number and types of supported State values are derived from `DeviceStateContract`.
-
-The repository therefore has deterministic device capacity without requiring string-key maps or runtime State registration.
-
-# Device identity
-
-`DeviceIdentifier` is always 128 bits and is independent of any transport.
-
-For ESP32-class devices, an adapter can derive it automatically from the hardware MAC address:
-
-```cpp
-uint8_t mac[6] = {
-    0x64, 0xB7, 0x08,
-    0x85, 0x63, 0x3D
-};
-
-DeviceIdentifier device =
-    DeviceIdentifier::FromMacAddress(mac);
-```
-
-Application developers do not need to hardcode a separate identifier for each ESP32 board when a stable hardware identity is available.
-
-Other platforms can construct the same 128-bit abstraction from an appropriate stable identifier without introducing WiFi or ESP-NOW dependencies into State.
-
-# Applying remote State
-
-Transport adapters ultimately apply a typed State snapshot to the repository:
+A transport applies a complete typed snapshot atomically:
 
 ```cpp
 remoteState.Apply<FrontCamera>(
     device,
-    1,  // origin epoch/session
-    42, // monotonically increasing State revision
-    CameraStateData{
-        true,
-        2.0f,
-        1.75f
-    }
+    1,   // origin epoch
+    42,  // revision
+    cameraValue
 );
 ```
 
-The complete `CameraStateData` object is committed as one State update.
+Older revisions cannot overwrite newer State. A newer epoch represents a new origin lifetime, such as after a device restart.
 
-Older or duplicate revisions are rejected:
+## Thread-safe reads
 
-```cpp
-bool applied = remoteState.Apply<FrontCamera>(
-    device,
-    1,
-    41,
-    olderValue
-);
-
-// applied == false when revision 42 is already known.
-```
-
-A newer epoch establishes a new authoritative State lifetime after an origin device restarts.
-
-# Reading typed Remote State
-
-There is no string-based lookup in the foundational API:
+Remote values are read into snapshots rather than by retaining pointers into repository storage:
 
 ```cpp
-const auto* camera =
-    remoteState.Get<FrontCamera>(device);
+RemoteStateSnapshot<FrontCamera::Value> snapshot;
 
-if (camera != nullptr && camera->HasValue) {
-    const CameraStateData& value = camera->Value;
-
-    // value is compiler-known to be CameraStateData.
+if (remoteState.Read<FrontCamera>(device, snapshot) && snapshot.HasValue) {
+    const auto& value = snapshot.Value;
+    const auto revision = snapshot.Revision;
+    const auto availability = snapshot.Availability;
 }
 ```
 
-The compiler verifies that `FrontCamera` belongs to the repository's `StateContract` and that its returned value type is `FrontCamera::Value`.
+The copy is intentional: it provides a stable transactional view while the repository can continue to receive updates from another execution context.
 
-Multiple definitions using the same payload type remain independently addressable:
+# Compound State is atomic
 
-```cpp
-const auto* front = remoteState.Get<FrontCamera>(device);
-const auto* rear  = remoteState.Get<RearCamera>(device);
+A compound value such as gyroscope axes, coordinates, motor telemetry, or camera status is one logical snapshot.
+
+```text
+GyroscopeData
+    X
+    Y
+    Z
 ```
 
-# Remote device availability
+The complete typed object is replaced as one repository operation. Consumers do not observe an unintended mixture of fields from different revisions.
 
-Availability is intentionally separate from the last known State value:
+# Subscriptions
+
+`StateSubscriptionRegistry<TCapacity>` records **State this device wants to consume**.
 
 ```cpp
-remoteState.SetAvailability(
-    device,
-    RemoteDeviceAvailability::Connected
+StateSubscriptionRegistry<8> subscriptions;
+
+subscriptions.Subscribe<FrontGyroscope>();
+subscriptions.Subscribe<RearGyroscope>(
+    StateSubscription<RearGyroscope>::From(specificDevice)
 );
 ```
 
-A future liveness integration may move the device through states such as:
+Subscriptions may target:
 
 ```text
+any device + one State definition
+one device + one State definition
+```
+
+Both typed and transport-facing queries are available:
+
+```cpp
+subscriptions.IsSubscribed<FrontGyroscope>(device);
+subscriptions.IsSubscribed(device, StateTypeIdOf<FrontGyroscope>);
+```
+
+A transport is expected to reject unsolicited State. Receiving a valid wire message is not sufficient permission to mutate `RemoteStateManager`; the `(origin, StateTypeId)` must match a local subscription.
+
+`StateSubscriberRegistry<TContract, TMaximumSubscribers>` represents the opposite direction: remote devices that have subscribed to State owned by this device. This allows publishers/transports to send only State for which a consumer has declared interest.
+
+# Acknowledgements and latest-only reliability
+
+A State acknowledgement means:
+
+> The receiving remote State repository accepted this revision, or already contains that exact revision.
+
+It does **not** mean arbitrary application observers have finished reacting.
+
+Pending delivery is keyed by destination and State identity. A newer revision supersedes the older pending value instead of adding another historical work item:
+
+```text
+revision 42 pending
+        |
+revision 43 published
+        |
+        v
+pending slot now represents revision 43
+```
+
+An ACK for revision 42 cannot clear a newer pending revision 43.
+
+# Availability and resynchronisation
+
+Availability is metadata associated with a remote device, independent of whether the last known State remains readable:
+
+```text
+Unknown
 Connected
 Stale
 Disconnected
 ConnectionLost
 ```
 
-The last known replicated State can remain queryable even when the device is no longer considered currently available. Application code decides how to represent that condition.
+The last accepted State may remain available while liveness changes, allowing application policy to decide whether stale/disconnected values remain useful.
 
-# Planned subscription semantics
+Resynchronisation asks the authoritative owner for current source-backed snapshots and is scoped to subscribed State rather than dumping all State indiscriminately.
 
-Subscriptions are declarations of interest, not additional copies of application State.
+# Observation with ESPressio Observable
 
-The design supports:
+ESPressio Observable is the one mandatory ESPressio dependency of the State core.
 
-```text
-all devices + one State definition
-one device  + one State definition
-runtime subscribe/unsubscribe within fixed capacity
-static subscriptions declared before initialization
+State uses `ThreadSafeObservable` for lightweight synchronous lifecycle notification wherever a State component owns a meaningful transition. Current observer contracts cover:
+
+- remote device registration;
+- accepted/rejected State revisions;
+- remote availability transitions;
+- local subscribe/unsubscribe/capacity events;
+- remote subscriber add/remove/capacity events;
+- source registration/unregistration;
+- generic and typed publication;
+- pending/superseded/acknowledged/stale-ACK publication lifecycle.
+
+Typed publication and remote-State observation carry `StateTag<TDefinition>`, so two State definitions that share the same `Value` type remain independently observable.
+
+Synchronous lifecycle observers should remain lightweight. They can execute in infrastructure/transport-related contexts.
+
+# Optional coalesced application observers
+
+Arbitrary application work should not run directly in a transport receive path. When ESPressio Threads is available, include:
+
+```cpp
+#include <ESPressio_RemoteStateObserverThread.hpp>
 ```
 
-Only State a consumer has subscribed to should cross a transport.
+and use:
 
-Initial and reconnect synchronization will likewise be scoped to subscribed State rather than sending every State known by the origin.
+```cpp
+RemoteStateObserverThread<DeviceStateContract, 8> observerThread(remoteState);
+```
 
-See issue #3 and issue #5 for the active design work.
+This layer listens cheaply to `RemoteStateManager`, records dirty `(device, StateType)` identities, and later reads the newest snapshot from its own ESPressio Threads execution context.
 
-# Planned acknowledgement semantics
+```text
+v10 accepted
+v11 accepted
+v12 accepted
+     |
+     v
+one dirty identity
+     |
+observer thread runs
+     |
+reads current snapshot: v12
+```
 
-A State acknowledgement will mean:
+It intentionally does not construct a queue of obsolete State values.
 
-> The receiving Remote State repository accepted this revision.
+ESPressio Threads is **not** a mandatory `library.json` dependency of State; it is required only by code that selects this optional header.
 
-It will **not** mean that arbitrary application observers have finished reacting to it.
+# Transport-neutral State protocol
 
-When a newer revision exists, stale pending updates and stale acknowledgement waits are superseded rather than preserved as historical work.
+State owns compact transport-independent messages for:
 
-See issue #4.
+```text
+Update
+Acknowledgement
+Subscribe
+Unsubscribe
+Resynchronize
+Disconnect
+```
+
+Wire State identity is based on `DeviceIdentifier`, `StateTypeId`, epoch and revision rather than human-readable State names.
+
+`StateCodec<TDefinition>` provides the payload codec boundary. The default path supports allocation-free encoding for suitable trivially-copyable values; richer contracts can specialize the codec without making diagnostic serialization mandatory.
+
+# Optional ESP-NOW integration
+
+ESPressio-ESP-Now currently contains the opt-in:
+
+```cpp
+#include <ESPressio_ESPNowStateTransport.hpp>
+```
+
+on its active `bugfix/39-wifi-coexistence` working branch.
+
+The adapter maps ESP-NOW MAC peers to `DeviceIdentifier`, carries the State protocol, sends only subscribed State, rejects unsolicited incoming State, acknowledges repository acceptance, and retains at most the latest pending wire image for each `(subscriber, StateType)`.
+
+ESPressio-ESP-Now does not acquire a mandatory ESPressio-State dependency merely by providing this adapter.
+
+# Optional Serial logging observers
+
+ESPressio-Serial currently contains the opt-in:
+
+```cpp
+#include <ESPressio_StateMonitor.hpp>
+```
+
+on its active `optimisation/39-explicit-thread-lifecycle` working branch.
+
+`ESPressio::Serial::StateMonitor` can observe selected State lifecycle components and emit Serial diagnostics. It is not included by the normal `ESPressio_Serial.hpp` path, and ESPressio-Serial does not acquire a mandatory State dependency unless an implementing application explicitly selects the State monitor header.
+
+This is intentional: Serial output can affect timing and remains developer opt-in, consistent with other ESPressio Serial observers.
+
+# Dependencies
+
+The core package currently declares:
+
+```text
+ESPressio Observable >=3.0.2 <4.0.0
+```
+
+C++17 and RTTI are required by the current Observable observer model.
+
+Not mandatory for the State core:
+
+```text
+ESPressio Threads
+ESPressio Serial
+ESPressio ESP-Now
+ESPressio Serializable
+ESPressio Event
+```
+
+Those dependencies are consumed only by optional integration layers that need them.
+
+# Installation during active development
+
+```ini
+lib_deps =
+    https://github.com/ESPressio-Development-Platform/ESPressio-State.git#feature/1-state-foundation
+```
 
 # State vs Event vs Command
 
-Use the primitives according to their semantics:
-
 ```text
 State
-    shares what is true now
+    what is true now
     latest value matters
     stale intermediate values are disposable
 
 Event
-    reports that something happened
+    something happened
     historical transitions may matter
 
 Command
-    asks something to happen
-    execution/result semantics may matter
+    something should be done
+    execution/result semantics matter
 ```
 
-Do not use State to reproduce desired-state Command semantics. If Device A wants Device B to perform an operation, ESPressio Command remains the appropriate primitive.
+State must not be used to recreate desired-state Command semantics.
 
-# Optional diagnostics and serialization
+# Optional introspection
 
-Human-readable names, string lookup, serialization, complete repository dumps, Serial diagnostics, or Web UI introspection must not impose mandatory runtime overhead on the core State system.
-
-Those facilities are tracked as opt-in functionality under issue #7 and will be removable from builds that do not need them.
+Human-readable names, string lookup, complete repository dumps, schema/diagnostic serialization, Serial presentation, and Web UI introspection should not impose mandatory overhead on the normal typed State path. Such facilities remain optional by design.
 
 # Examples
 
-- `examples/TypedRemoteState` — defines two gyroscope State identities sharing the same `GyroscopeData` value type and reads them through a typed `RemoteStateManager`.
+- `examples/TypedRemoteState` — two independent gyroscope State definitions sharing the same payload type, stored and read through a typed `RemoteStateManager`.
 
 # Active feature issues
 
 - #1 — State contracts and transport-neutral device identity
-- #2 — Typed remote state storage
+- #2 — Typed remote State storage
 - #3 — State publication and subscription model
 - #4 — State transport acknowledgements and coalescing
 - #5 — Remote device availability and resynchronisation
 - #6 — Remote State observation and coalesced execution
 - #7 — Optional State introspection and serialization
-- #8 — Transport adapter integration for ESP-NOW and Serial
+- #8 — Transport adapter integration
 
-All current development remains on `feature/1-state-foundation`; `main` is not the active integration target during this development round.
+Downstream integration work is additionally tracked in the owning libraries, including ESPressio-ESP-Now #48 and ESPressio-Serial #41.
+
+All current State development remains on `feature/1-state-foundation`; `main` is not the active integration target during this development round.
+
+## License
+
+Licensed under the Apache License 2.0. See [LICENSE](LICENSE).
