@@ -11,6 +11,7 @@
 
 #include "ESPressio_DeviceIdentifier.hpp"
 #include "ESPressio_StateContract.hpp"
+#include "ESPressio_StateComparison.hpp"
 #include "ESPressio_StateObservers.hpp"
 
 namespace ESPressio {
@@ -211,7 +212,7 @@ public:
                      (epoch == slot.Epoch && revision <= slot.Revision))) {
                     accepted = false;
                 } else {
-                    changed = !slot.HasValue || !(slot.Value == value);
+                    changed = !slot.HasValue || StateValueChanged<TDefinition>(slot.Value, value);
                     slot.Value = value;
                     slot.Epoch = epoch;
                     slot.Revision = revision;
