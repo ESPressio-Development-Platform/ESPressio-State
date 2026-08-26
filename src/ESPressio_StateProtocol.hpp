@@ -22,7 +22,9 @@ public:
         Subscribe = 3,
         Unsubscribe = 4,
         Resynchronize = 5,
-        Disconnect = 6
+        Disconnect = 6,
+        SubscribeAcknowledgement = 7,
+        UnsubscribeAcknowledgement = 8
     };
 
     struct ControlMessage {
@@ -102,6 +104,16 @@ private:
         if (Read16(input) != Magic || input[2] != Version) return false;
         type = static_cast<MessageType>(input[3]);
         return true;
+    }
+
+    static bool IsControlMessageType(MessageType type) {
+        return
+            type == MessageType::Subscribe ||
+            type == MessageType::Unsubscribe ||
+            type == MessageType::Resynchronize ||
+            type == MessageType::Disconnect ||
+            type == MessageType::SubscribeAcknowledgement ||
+            type == MessageType::UnsubscribeAcknowledgement;
     }
 
 public:
@@ -204,12 +216,7 @@ public:
         std::size_t capacity,
         std::size_t& size
     ) {
-        if (
-            control.Type != MessageType::Subscribe &&
-            control.Type != MessageType::Unsubscribe &&
-            control.Type != MessageType::Resynchronize &&
-            control.Type != MessageType::Disconnect
-        ) return false;
+        if (!IsControlMessageType(control.Type)) return false;
         if (capacity < ControlSize || !WriteCommon(control.Type, output, capacity)) return false;
         std::memcpy(output + 4, control.Device.Bytes().data(), DeviceIdentifier::Size);
         Write64(output + 20, control.TypeId);
@@ -224,12 +231,7 @@ public:
     ) {
         MessageType type;
         if (!ReadCommon(input, size, type) || size != ControlSize) return false;
-        if (
-            type != MessageType::Subscribe &&
-            type != MessageType::Unsubscribe &&
-            type != MessageType::Resynchronize &&
-            type != MessageType::Disconnect
-        ) return false;
+        if (!IsControlMessageType(type)) return false;
         DeviceIdentifier::Storage device{};
         std::memcpy(device.data(), input + 4, device.size());
         control.Type = type;
