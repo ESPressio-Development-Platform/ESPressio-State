@@ -274,12 +274,33 @@ public:
 
     bool IsPrepared() const noexcept { return _prepared; }
 
+    // Generic registration remains available for a single-interface observer.
     Observable::ObserverHandlePtr RegisterObserver(Observable::IObserver* observer) {
         return _observable->RegisterObserver(observer);
     }
 
     void UnregisterObserver(Observable::IObserver* observer) {
         _observable->UnregisterObserver(observer);
+    }
+
+    // Prefer these helpers for observers implementing several State observer
+    // interfaces. They select one unambiguous IObserver base while Observable's
+    // RTTI cross-casts still expose all sibling observer interfaces.
+    template<typename TDefinition>
+    Observable::ObserverHandlePtr RegisterStateObserver(
+        IRemoteStateObserver<TDefinition>* observer
+    ) {
+        static_assert(
+            TContract::template Contains<TDefinition>,
+            "State definition is not part of this StateContract"
+        );
+        return _observable->RegisterObserver(observer);
+    }
+
+    Observable::ObserverHandlePtr RegisterAvailabilityObserver(
+        IRemoteDeviceAvailabilityObserver* observer
+    ) {
+        return _observable->RegisterObserver(observer);
     }
 
     void OnRemoteStateAccepted(
