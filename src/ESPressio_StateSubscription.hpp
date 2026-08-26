@@ -85,7 +85,7 @@ public:
     static constexpr std::size_t Capacity = TCapacity;
 
     Observable::ObserverHandlePtr RegisterObserver(IStateSubscriptionRegistryObserver* observer) {
-        return _observable->RegisterObserver(observer);
+        return _observable->template RegisterObserverAs<IStateSubscriptionRegistryObserver>(observer);
     }
 
     void UnregisterObserver(IStateSubscriptionRegistryObserver* observer) {
@@ -154,15 +154,20 @@ public:
 
     template<typename TCallback>
     void ForEach(TCallback&& callback) const {
+        // Descriptor is a small fixed transport/configuration value. Copying only
+        // active descriptors here intentionally preserves a lock-free callback
+        // phase and avoids exposing mutable registry storage across re-entrant code.
         std::array<Descriptor, TCapacity> snapshot{};
         std::size_t count = 0;
         {
             std::lock_guard<std::mutex> lock(_mutex);
-            for (const auto& record : _records) if (record.Used) snapshot[count++] = record.Subscription;
+            for (const auto& record : _records) {
+                if (record.Used) snapshot[count++] = record.Subscription;
+            }
         }
         for (std::size_t index = 0; index < count; ++index) callback(snapshot[index]);
     }
 };
 
-}
-}
+} // namespace State
+} // namespace ESPressio
