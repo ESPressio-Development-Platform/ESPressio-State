@@ -22,7 +22,7 @@
     "dependencies": [
         {
             "name": "ESPressio-Observable",
-            "url": "https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#feature/16-rtti-free-observer-registry",
+            "version": "https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#feature/16-rtti-free-observer-registry",
             "platforms": "*"
         }
     ]
