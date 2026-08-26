@@ -31,7 +31,9 @@ public:
     virtual void OnRemoteStateChanged(
         StateTag<TDefinition>,
         const DeviceIdentifier&,
-        const Value&,
+        bool hasPreviousValue,
+        const Value& previousValue,
+        const Value& latestValue,
         StateEpoch,
         StateRevision,
         RemoteDeviceAvailability
