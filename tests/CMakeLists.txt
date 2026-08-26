@@ -50,3 +50,14 @@ target_include_directories(test_state_protocol PRIVATE
 )
 
 add_test(NAME state_protocol COMMAND test_state_protocol)
+
+add_executable(test_state_comparison
+    test_state_comparison.cpp
+)
+
+target_include_directories(test_state_comparison PRIVATE
+    ../src
+    ${ESPRESSIO_OBSERVABLE_DIR}
+)
+
+add_test(NAME state_comparison COMMAND test_state_comparison)
