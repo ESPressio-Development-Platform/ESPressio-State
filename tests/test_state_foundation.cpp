@@ -76,7 +76,7 @@ int main() {
 
     RemoteStateSnapshot<GyroscopeData> front;
     assert(manager.Read<FrontGyroscope>(device, front));
-    assert(front.Value == GyroscopeData{1,2,3});
+    assert((front.Value == GyroscopeData{1,2,3}));
     assert(manager.Apply<RearGyroscope>(device, 1, 1, {4,5,6}));
     assert(manager.Apply<FrontGyroscope>(device, 1, 2, {1,2,3}));
     assert(!manager.Apply<FrontGyroscope>(device, 1, 2, {9,9,9}));
