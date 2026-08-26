@@ -36,6 +36,23 @@ struct StateComparison<DeadbandAnalogState> {
 } // namespace State
 } // namespace ESPressio
 
+class ComparisonObserver final : public IRemoteStateManagerObserver {
+public:
+    int Accepted = 0;
+    int Changed = 0;
+
+    void OnRemoteStateAccepted(
+        const DeviceIdentifier&,
+        StateTypeId,
+        StateEpoch,
+        StateRevision,
+        bool changed
+    ) override {
+        ++Accepted;
+        if (changed) ++Changed;
+    }
+};
+
 int main() {
     const AnalogValue baseline{100};
     const AnalogValue noise{104};
@@ -53,6 +70,26 @@ int main() {
 
     // The comparison is keyed by State definition, even with the same Value type.
     static_assert(StateTypeIdOf<ExactAnalogState> != StateTypeIdOf<DeadbandAnalogState>);
+
+    // Remote revisions are still accepted and advance even when the new value is
+    // semantically equal, but observers see changed=false until the deadband is crossed.
+    using Contract = StateContract<DeadbandAnalogState>;
+    RemoteStateManager<Contract, 1> manager;
+    ComparisonObserver observer;
+    auto handle = manager.RegisterObserver(static_cast<IRemoteStateManagerObserver*>(&observer));
+    const uint8_t mac[6] = {0x64, 0xB7, 0x08, 0x85, 0x63, 0x3D};
+    const auto device = DeviceIdentifier::FromMacAddress(mac);
+
+    assert(manager.Apply<DeadbandAnalogState>(device, 1, 1, baseline));
+    assert(manager.Apply<DeadbandAnalogState>(device, 1, 2, noise));
+    assert(manager.Apply<DeadbandAnalogState>(device, 1, 3, meaningful));
+    assert(observer.Accepted == 3);
+    assert(observer.Changed == 2);
+
+    RemoteStateSnapshot<AnalogValue> snapshot;
+    assert(manager.Read<DeadbandAnalogState>(device, snapshot));
+    assert(snapshot.Revision == 3);
+    assert(snapshot.Value.Value == meaningful.Value);
 
     return 0;
 }
