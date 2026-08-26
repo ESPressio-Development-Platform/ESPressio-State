@@ -156,6 +156,7 @@ jobs:
           lib_deps =
               file://${{ github.workspace }}
               https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#feature/16-rtti-free-observer-registry
+              https://github.com/ESPressio-Development-Platform/ESPressio-Units.git#0.2.7
               https://github.com/ESPressio-Development-Platform/ESPressio-Threads.git#feature/73-memory-efficiency
           build_unflags =
               -std=gnu++11
