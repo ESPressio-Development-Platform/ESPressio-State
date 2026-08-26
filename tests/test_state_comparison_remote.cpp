@@ -54,10 +54,10 @@ int main() {
     assert(manager.Apply<DeadbandState>(device, 1, 2, {104}));
     assert(manager.Apply<DeadbandState>(device, 1, 3, {110}));
 
-    // Every newer revision is accepted and stored, but only meaningful
-    // changes according to the State definition's policy are reported changed.
+    // The policy belongs to the source/publication decision. Every distinct
+    // newer revision arriving remotely is therefore an origin-declared change.
     assert(observer.Accepted == 3);
-    assert(observer.Changed == 2);
+    assert(observer.Changed == 3);
 
     RemoteStateSnapshot<NoisyValue> snapshot;
     assert(manager.Read<DeadbandState>(device, snapshot));
