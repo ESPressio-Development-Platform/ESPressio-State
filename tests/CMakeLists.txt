@@ -39,3 +39,14 @@ target_include_directories(test_state_introspection PRIVATE
 )
 
 add_test(NAME state_introspection COMMAND test_state_introspection)
+
+add_executable(test_state_protocol
+    test_state_protocol.cpp
+)
+
+target_include_directories(test_state_protocol PRIVATE
+    ../src
+    ${ESPRESSIO_OBSERVABLE_DIR}
+)
+
+add_test(NAME state_protocol COMMAND test_state_protocol)
