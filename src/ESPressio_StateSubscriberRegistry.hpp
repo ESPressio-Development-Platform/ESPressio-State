@@ -161,6 +161,21 @@ public:
         return IsSubscribed(device, StateTypeIdOf<TDefinition>);
     }
 
+    bool HasSubscribers(StateTypeId typeId) const {
+        std::size_t index = 0;
+        if (!TContract::TryIndexOf(typeId, index)) return false;
+        std::lock_guard<std::mutex> lock(_mutex);
+        for (const auto& subscriber : _subscribers) {
+            if (subscriber.Used && subscriber.States[index]) return true;
+        }
+        return false;
+    }
+
+    template<typename TDefinition>
+    bool HasSubscribers() const {
+        return HasSubscribers(StateTypeIdOf<TDefinition>);
+    }
+
     bool Remove(const DeviceIdentifier& device) {
         bool removed = false;
         {
