@@ -1,5 +1,6 @@
 #include <cassert>
 #include <cstdint>
+#include <cstring>
 #include <type_traits>
 
 #include <ESPressio_StateIntrospection.hpp>
@@ -46,7 +47,7 @@ int main() {
     const char* name = nullptr;
     assert(StateIntrospection<Contract>::TryGetName(1, name));
     assert(name != nullptr);
-    assert(std::string(name) == "led.enabled");
+    assert(std::strcmp(name, "led.enabled") == 0);
     assert(!StateIntrospection<Contract>::TryGetName(3, name));
     assert(name == nullptr);
 
