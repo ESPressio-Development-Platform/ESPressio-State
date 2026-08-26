@@ -96,7 +96,9 @@ public:
     Observable::ObserverHandlePtr RegisterObserver(
         IStateSubscriberRegistryObserver* observer
     ) {
-        return _observable->RegisterObserver(observer);
+        return _observable->template RegisterObserverAs<
+            IStateSubscriberRegistryObserver
+        >(observer);
     }
 
     void UnregisterObserver(IStateSubscriberRegistryObserver* observer) {
@@ -229,5 +231,5 @@ public:
     }
 };
 
-}
-}
+} // namespace State
+} // namespace ESPressio
