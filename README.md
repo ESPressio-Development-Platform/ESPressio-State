@@ -19,6 +19,7 @@ The current branch includes:
 - compact transport-neutral update, ACK, subscription, resynchronisation and disconnect messages;
 - synchronous ESPressio Observable lifecycle notifications throughout the State components;
 - an optional ESPressio Threads-backed coalesced application-observer execution layer;
+- optional allocation-free State introspection and bounded diagnostic serialization;
 - an optional ESP-NOW transport adapter in ESPressio-ESP-Now;
 - optional State logging observers in ESPressio-Serial.
 
@@ -166,6 +167,15 @@ if (remoteState.Read<FrontCamera>(device, snapshot) && snapshot.HasValue) {
 
 The copy is intentional: it provides a stable transactional view while the repository can continue to receive updates from another execution context.
 
+For diagnostic/read-only enumeration, `ForEachDevice()` copies only device identity and availability while holding the repository lock, then executes callbacks after releasing it:
+
+```cpp
+remoteState.ForEachDevice([](const RemoteDeviceSnapshot& device) {
+    // device.Identifier
+    // device.Availability
+});
+```
+
 # Compound State is atomic
 
 A compound value such as gyroscope axes, coordinates, motor telemetry, or camera status is one logical snapshot.
@@ -283,6 +293,7 @@ RemoteStateObserverThread<DeviceStateContract, 8> observerThread(remoteState);
 This layer listens cheaply to `RemoteStateManager`, records dirty `(device, StateType)` identities, and later reads the newest snapshot from its own ESPressio Threads execution context.
 
 ```text
+application last received v9
 v10 accepted
 v11 accepted
 v12 accepted
@@ -292,10 +303,18 @@ one dirty identity
      |
 observer thread runs
      |
-reads current snapshot: v12
+     v
+callback previous=v9, latest=v12
 ```
 
-It intentionally does not construct a queue of obsolete State values.
+It intentionally does not construct a queue of obsolete State values. The optional observer layer retains only the last value delivered to application observers for each `(device, StateType)`, allowing meaningful coalesced `previous -> latest` callbacks without adding State history to the core repository.
+
+Typed observers can be registered without ambiguous multiple-`IObserver` base conversions:
+
+```cpp
+observerThread.RegisterStateObserver<FrontGyroscope>(&observer);
+observerThread.RegisterAvailabilityObserver(&observer);
+```
 
 ESPressio Threads is **not** a mandatory `library.json` dependency of State; it is required only by code that selects this optional header.
 
@@ -315,6 +334,116 @@ Disconnect
 Wire State identity is based on `DeviceIdentifier`, `StateTypeId`, epoch and revision rather than human-readable State names.
 
 `StateCodec<TDefinition>` provides the payload codec boundary. The default path supports allocation-free encoding for suitable trivially-copyable values; richer contracts can specialize the codec without making diagnostic serialization mandatory.
+
+# Optional State introspection
+
+Human-readable names and repository enumeration are deliberately excluded from `ESPressio_State.hpp`. Select them explicitly:
+
+```cpp
+#include <ESPressio_StateIntrospection.hpp>
+```
+
+A State definition may optionally expose diagnostic metadata:
+
+```cpp
+struct FrontGyroscope {
+    using Value = GyroscopeData;
+    static constexpr StateTypeId Id = 0x1001;
+    static constexpr const char* Name = "gyroscope.front";
+};
+```
+
+`Name` never participates in identity or transport. `StateTypeId` remains authoritative. Definitions without a `Name` remain fully usable and introspectable by ID.
+
+The optional layer supports symbolic lookup:
+
+```cpp
+const char* name = nullptr;
+StateIntrospection<DeviceStateContract>::TryGetName(0x1001, name);
+
+StateTypeId typeId = 0;
+StateIntrospection<DeviceStateContract>::TryGetTypeId("gyroscope.front", typeId);
+```
+
+and three typed repository scopes:
+
+```cpp
+// one State from one device
+RemoteStateIntrospectionSnapshot<FrontGyroscope> snapshot;
+StateIntrospection<DeviceStateContract>::Read<FrontGyroscope>(
+    remoteState,
+    device,
+    snapshot
+);
+
+// all currently-valued State for one device
+StateIntrospection<DeviceStateContract>::ForEachState(
+    remoteState,
+    device,
+    [](const auto& state) { /* typed snapshot */ }
+);
+
+// all currently-valued remote State
+StateIntrospection<DeviceStateContract>::ForEachRemoteState(
+    remoteState,
+    [](const auto& state) { /* typed snapshot */ }
+);
+```
+
+Inclusion enables `ESPRESSIO_STATE_ENABLE_INTROSPECTION` by default. A build may define it as `0` before including the optional header to compile the feature out entirely.
+
+# Optional diagnostic serialization
+
+Diagnostic serialization is also explicit:
+
+```cpp
+#include <ESPressio_StateSerialization.hpp>
+```
+
+It produces a bounded `SerializedRemoteState<TDefinition>` record containing:
+
+```text
+DeviceIdentifier
+StateTypeId
+optional symbolic Name
+Epoch
+Revision
+Availability
+bounded encoded payload
+```
+
+The payload is produced by the existing authoritative `StateCodec<TDefinition>`. No second wire representation is introduced, and State does not gain a mandatory dependency on ESPressio Serializable, ArduinoJson, JSON, CBOR, Serial, or Web tooling.
+
+Single State, runtime-selected State, one-device traversal and whole-repository traversal are supported:
+
+```cpp
+SerializedRemoteState<FrontGyroscope> record;
+StateSerialization<DeviceStateContract>::Serialize<FrontGyroscope>(
+    remoteState,
+    device,
+    record
+);
+
+StateSerialization<DeviceStateContract>::Serialize(
+    remoteState,
+    device,
+    typeId,
+    [](const auto& selected) { /* selected typed record */ }
+);
+
+StateSerialization<DeviceStateContract>::ForEachState(
+    remoteState,
+    device,
+    [](const auto& state) { /* diagnostic adapter */ }
+);
+
+StateSerialization<DeviceStateContract>::ForEachRemoteState(
+    remoteState,
+    [](const auto& state) { /* Serial/Web/debug adapter */ }
+);
+```
+
+Inclusion enables `ESPRESSIO_STATE_ENABLE_SERIALIZATION` by default. A build may define it as `0` to exclude this layer entirely. Core publication, repository storage, subscriptions, acknowledgements and transport do not include or depend on either optional diagnostic header.
 
 # Optional ESP-NOW integration
 
@@ -364,7 +493,7 @@ ESPressio Serializable
 ESPressio Event
 ```
 
-Those dependencies are consumed only by optional integration layers that need them.
+Those dependencies are consumed only by optional integration layers that need them. The State introspection and bounded diagnostic serialization headers themselves do not require ESPressio Serializable.
 
 # Installation during active development
 
@@ -373,11 +502,15 @@ lib_deps =
     https://github.com/ESPressio-Development-Platform/ESPressio-State.git#feature/1-state-foundation
 ```
 
-Because State uses C++17 language features, PlatformIO applications targeting Arduino-ESP32 versions whose framework defaults to GNU++11 must remove that default and select C++17 explicitly:
+Arduino-ESP32 builds must select C++17 and RTTI explicitly when the framework supplies GNU++11 and `-fno-rtti` defaults:
 
 ```ini
-build_unflags = -std=gnu++11
-build_flags = -std=gnu++17
+build_unflags =
+    -std=gnu++11
+    -fno-rtti
+build_flags =
+    -std=gnu++17
+    -frtti
 ```
 
 # State vs Event vs Command
@@ -398,10 +531,6 @@ Command
 ```
 
 State must not be used to recreate desired-state Command semantics.
-
-# Optional introspection
-
-Human-readable names, string lookup, complete repository dumps, schema/diagnostic serialization, Serial presentation, and Web UI introspection should not impose mandatory overhead on the normal typed State path. Such facilities remain optional by design.
 
 # Examples
 
