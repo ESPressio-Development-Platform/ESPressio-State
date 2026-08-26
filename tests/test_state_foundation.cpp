@@ -22,13 +22,16 @@ using Contract = StateContract<FrontGyroscope, RearGyroscope, LedState>;
 class StateObserver final :
     public IRemoteStateManagerObserver,
     public IStateSubscriptionRegistryObserver,
+    public IStateSubscriberRegistryObserver,
     public IStatePublisherObserver,
     public IStatePublishedObserver<FrontGyroscope>,
     public IStatePublishedObserver<RearGyroscope>,
     public IStatePublicationObserver {
 public:
     int Devices = 0, Accepted = 0, Changed = 0, Rejected = 0, Availability = 0;
-    int Subscribed = 0, Unsubscribed = 0, Sources = 0, Published = 0;
+    int Subscribed = 0, Unsubscribed = 0;
+    int RemoteSubscriberAdded = 0, RemoteSubscriberRemoved = 0, RemoteSubscriberDeviceRemoved = 0;
+    int Sources = 0, Published = 0;
     int FrontPublished = 0, RearPublished = 0;
     int Pending = 0, Superseded = 0, Acknowledged = 0, StaleAcknowledgements = 0;
 
@@ -38,6 +41,9 @@ public:
     void OnRemoteStateAvailabilityChanged(const DeviceIdentifier&, RemoteDeviceAvailability, RemoteDeviceAvailability) override { ++Availability; }
     void OnStateSubscribed(StateTypeId, StateSubscriptionScope, const DeviceIdentifier&) override { ++Subscribed; }
     void OnStateUnsubscribed(StateTypeId, StateSubscriptionScope, const DeviceIdentifier&) override { ++Unsubscribed; }
+    void OnRemoteStateSubscriberAdded(const DeviceIdentifier&, StateTypeId) override { ++RemoteSubscriberAdded; }
+    void OnRemoteStateSubscriberRemoved(const DeviceIdentifier&, StateTypeId) override { ++RemoteSubscriberRemoved; }
+    void OnRemoteStateSubscriberDeviceRemoved(const DeviceIdentifier&) override { ++RemoteSubscriberDeviceRemoved; }
     void OnStateSourceRegistered(StateTypeId) override { ++Sources; }
     void OnStatePublished(StateTypeId, StateEpoch, StateRevision) override { ++Published; }
     void OnStatePublished(StateTag<FrontGyroscope>, const StateUpdate<GyroscopeData>&) override { ++FrontPublished; }
@@ -84,9 +90,23 @@ int main() {
     assert(subscriptions.Subscribe<FrontGyroscope>());
     assert(subscriptions.Subscribe<RearGyroscope>(StateSubscription<RearGyroscope>::From(device)));
     assert(subscriptions.IsSubscribed<FrontGyroscope>(otherDevice));
+    assert(subscriptions.IsSubscribed(otherDevice, StateTypeIdOf<FrontGyroscope>));
+    assert(subscriptions.IsSubscribed(device, StateTypeIdOf<RearGyroscope>));
     assert(!subscriptions.IsSubscribed<RearGyroscope>(otherDevice));
+    assert(!subscriptions.IsSubscribed(otherDevice, StateTypeIdOf<RearGyroscope>));
     assert(subscriptions.Unsubscribe<FrontGyroscope>());
     assert(observer.Subscribed == 2 && observer.Unsubscribed == 1);
+
+    StateSubscriberRegistry<Contract, 2> remoteSubscribers;
+    auto remoteSubscriberHandle = remoteSubscribers.RegisterObserver(static_cast<IStateSubscriberRegistryObserver*>(&observer));
+    assert(remoteSubscribers.Subscribe(otherDevice, StateTypeIdOf<FrontGyroscope>));
+    assert(remoteSubscribers.IsSubscribed<FrontGyroscope>(otherDevice));
+    assert(observer.RemoteSubscriberAdded == 1);
+    assert(remoteSubscribers.Unsubscribe(otherDevice, StateTypeIdOf<FrontGyroscope>));
+    assert(observer.RemoteSubscriberRemoved == 1);
+    assert(remoteSubscribers.Subscribe(otherDevice, StateTypeIdOf<RearGyroscope>));
+    assert(remoteSubscribers.Remove(otherDevice));
+    assert(observer.RemoteSubscriberDeviceRemoved == 1);
 
     GyroscopeData authoritative{20,21,22};
     StatePublisher<Contract> publisher(device, 7);
