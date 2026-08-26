@@ -61,9 +61,24 @@ public:
         return true;
     }
 
-    constexpr bool operator==(const DeviceIdentifier& other) const noexcept { return _bytes == other._bytes; }
-    constexpr bool operator!=(const DeviceIdentifier& other) const noexcept { return !(*this == other); }
-    constexpr bool operator<(const DeviceIdentifier& other) const noexcept { return _bytes < other._bytes; }
+    constexpr bool operator==(const DeviceIdentifier& other) const noexcept {
+        for (std::size_t index = 0; index < Size; ++index) {
+            if (_bytes[index] != other._bytes[index]) return false;
+        }
+        return true;
+    }
+
+    constexpr bool operator!=(const DeviceIdentifier& other) const noexcept {
+        return !(*this == other);
+    }
+
+    constexpr bool operator<(const DeviceIdentifier& other) const noexcept {
+        for (std::size_t index = 0; index < Size; ++index) {
+            if (_bytes[index] < other._bytes[index]) return true;
+            if (_bytes[index] > other._bytes[index]) return false;
+        }
+        return false;
+    }
 };
 
 }
