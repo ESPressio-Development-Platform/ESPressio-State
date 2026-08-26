@@ -95,11 +95,48 @@ jobs:
           #include <Arduino.h>
           #include <ESPressio_State.hpp>
           #include <ESPressio_RemoteStateObserverThread.hpp>
-          struct LedState { using Value = bool; static constexpr ESPressio::State::StateTypeId Id = 1; };
+
+          struct LedState {
+              using Value = bool;
+              static constexpr ESPressio::State::StateTypeId Id = 1;
+          };
           using Contract = ESPressio::State::StateContract<LedState>;
+
+          class LedObserver final :
+              public ESPressio::State::IRemoteStateObserver<LedState>,
+              public ESPressio::State::IRemoteDeviceAvailabilityObserver {
+          public:
+              void OnRemoteStateChanged(
+                  ESPressio::State::StateTag<LedState>,
+                  const ESPressio::State::DeviceIdentifier&,
+                  bool hasPreviousValue,
+                  const bool& previousValue,
+                  const bool& latestValue,
+                  ESPressio::State::StateEpoch,
+                  ESPressio::State::StateRevision,
+                  ESPressio::State::RemoteDeviceAvailability
+              ) override {
+                  (void)hasPreviousValue;
+                  (void)previousValue;
+                  (void)latestValue;
+              }
+
+              void OnRemoteDeviceAvailabilityChanged(
+                  const ESPressio::State::DeviceIdentifier&,
+                  ESPressio::State::RemoteDeviceAvailability,
+                  ESPressio::State::RemoteDeviceAvailability
+              ) override {}
+          };
+
           ESPressio::State::RemoteStateManager<Contract, 2> remoteState;
           ESPressio::State::RemoteStateObserverThread<Contract, 2> observerThread(remoteState);
-          void setup() { observerThread.Prepare(); }
+          LedObserver observer;
+          ESPressio::Observable::ObserverHandlePtr observerHandle;
+
+          void setup() {
+              observerHandle = observerThread.RegisterStateObserver<LedState>(&observer);
+              observerThread.Prepare();
+          }
           void loop() {}
           EOF
       - run: pio run -d /tmp/state-observer
