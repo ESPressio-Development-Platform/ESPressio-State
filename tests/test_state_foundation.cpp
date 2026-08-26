@@ -99,13 +99,21 @@ int main() {
 
     StateSubscriberRegistry<Contract, 2> remoteSubscribers;
     auto remoteSubscriberHandle = remoteSubscribers.RegisterObserver(static_cast<IStateSubscriberRegistryObserver*>(&observer));
+    assert(!remoteSubscribers.HasSubscribers<FrontGyroscope>());
+    assert(!remoteSubscribers.HasSubscribers(StateTypeIdOf<FrontGyroscope>));
     assert(remoteSubscribers.Subscribe(otherDevice, StateTypeIdOf<FrontGyroscope>));
     assert(remoteSubscribers.IsSubscribed<FrontGyroscope>(otherDevice));
+    assert(remoteSubscribers.HasSubscribers<FrontGyroscope>());
+    assert(remoteSubscribers.HasSubscribers(StateTypeIdOf<FrontGyroscope>));
+    assert(!remoteSubscribers.HasSubscribers<RearGyroscope>());
     assert(observer.RemoteSubscriberAdded == 1);
     assert(remoteSubscribers.Unsubscribe(otherDevice, StateTypeIdOf<FrontGyroscope>));
+    assert(!remoteSubscribers.HasSubscribers<FrontGyroscope>());
     assert(observer.RemoteSubscriberRemoved == 1);
     assert(remoteSubscribers.Subscribe(otherDevice, StateTypeIdOf<RearGyroscope>));
+    assert(remoteSubscribers.HasSubscribers<RearGyroscope>());
     assert(remoteSubscribers.Remove(otherDevice));
+    assert(!remoteSubscribers.HasSubscribers<RearGyroscope>());
     assert(observer.RemoteSubscriberDeviceRemoved == 1);
 
     GyroscopeData authoritative{20,21,22};
