@@ -152,19 +152,18 @@ int main() {
     assert(StateProtocol::DecodeValue<FrontGyroscope>(parsed, decoded));
     assert(decoded == authoritative);
 
-    StatePublicationTracker tracker;
-    auto publicationHandle = tracker.RegisterObserver(static_cast<IStatePublicationObserver*>(&observer));
-    assert(tracker.MarkPending(otherDevice, snapshot.Header));
+    StatePublicationTracker<FrontGyroscope> tracker(otherDevice);
+    auto trackerHandle = tracker.RegisterObserver(static_cast<IStatePublicationObserver*>(&observer));
+    assert(tracker.Replace(7, 1, {1,1,1}));
     assert(observer.Pending == 1);
-    StateHeader newer = snapshot.Header;
-    newer.Revision = 2;
-    assert(tracker.MarkPending(otherDevice, newer));
-    assert(observer.Superseded == 1 && observer.Pending == 2);
-    assert(tracker.Acknowledge(otherDevice, StateTypeIdOf<FrontGyroscope>, 7, 1) == StateAcknowledgementResult::Stale);
+    assert(tracker.Replace(7, 2, {2,2,2}));
+    assert(observer.Superseded == 1);
+    assert(tracker.Acknowledge(7, 1));
+    assert(tracker.PendingUpdate().Pending);
     assert(observer.StaleAcknowledgements == 1);
-    assert(tracker.Acknowledge(otherDevice, StateTypeIdOf<FrontGyroscope>, 7, 2) == StateAcknowledgementResult::Acknowledged);
+    assert(tracker.Acknowledge(7, 2));
+    assert(!tracker.PendingUpdate().Pending);
     assert(observer.Acknowledged == 1);
-    assert(tracker.PendingCount() == 0);
 
     return 0;
 }
