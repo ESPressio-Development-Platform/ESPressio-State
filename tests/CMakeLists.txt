@@ -61,3 +61,14 @@ target_include_directories(test_state_comparison PRIVATE
 )
 
 add_test(NAME state_comparison COMMAND test_state_comparison)
+
+add_executable(test_state_comparison_remote
+    test_state_comparison_remote.cpp
+)
+
+target_include_directories(test_state_comparison_remote PRIVATE
+    ../src
+    ${ESPRESSIO_OBSERVABLE_DIR}
+)
+
+add_test(NAME state_comparison_remote COMMAND test_state_comparison_remote)
