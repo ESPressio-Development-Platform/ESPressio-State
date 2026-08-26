@@ -118,7 +118,15 @@ int main() {
 
     GyroscopeData authoritative{20,21,22};
     StatePublisher<Contract> publisher(device, 7);
-    auto publisherHandle = publisher.RegisterContractObserver(&observer);
+    auto publisherHandle = publisher.RegisterObserver(
+        static_cast<IStatePublisherObserver*>(&observer)
+    );
+    auto frontPublisherHandle = publisher.RegisterPublishedObserver<FrontGyroscope>(
+        static_cast<IStatePublishedObserver<FrontGyroscope>*>(&observer)
+    );
+    auto rearPublisherHandle = publisher.RegisterPublishedObserver<RearGyroscope>(
+        static_cast<IStatePublishedObserver<RearGyroscope>*>(&observer)
+    );
     assert(publisher.RegisterSource<FrontGyroscope>([&] { return authoritative; }));
     assert(publisher.RegisterSource<RearGyroscope>([&] { return GyroscopeData{30,31,32}; }));
     assert(observer.Sources == 2);
