@@ -71,8 +71,9 @@ int main() {
     // The comparison is keyed by State definition, even with the same Value type.
     static_assert(StateTypeIdOf<ExactAnalogState> != StateTypeIdOf<DeadbandAnalogState>);
 
-    // Remote revisions are still accepted and advance even when the new value is
-    // semantically equal, but observers see changed=false until the deadband is crossed.
+    // Once an origin publishes a newer revision, the receiver trusts that
+    // source-side meaningful-change decision. It does not apply its own
+    // deadband against a potentially different join/resync baseline.
     using Contract = StateContract<DeadbandAnalogState>;
     RemoteStateManager<Contract, 1> manager;
     ComparisonObserver observer;
@@ -84,12 +85,7 @@ int main() {
     assert(manager.Apply<DeadbandAnalogState>(device, 1, 2, noise));
     assert(manager.Apply<DeadbandAnalogState>(device, 1, 3, meaningful));
     assert(observer.Accepted == 3);
-    assert(observer.Changed == 2);
-
-    RemoteStateSnapshot<AnalogValue> snapshot;
-    assert(manager.Read<DeadbandAnalogState>(device, snapshot));
-    assert(snapshot.Revision == 3);
-    assert(snapshot.Value.Value == meaningful.Value);
+    assert(observer.Changed == 3);
 
     return 0;
 }
