@@ -46,8 +46,12 @@ jobs:
           framework = arduino
           lib_deps =
               file://${{ github.workspace }}
-          build_unflags = -std=gnu++11
-          build_flags = -std=gnu++17
+          build_unflags =
+              -std=gnu++11
+              -fno-rtti
+          build_flags =
+              -std=gnu++17
+              -frtti
           EOF
           cat > /tmp/state-core/src/main.cpp <<'EOF'
           #include <Arduino.h>
@@ -80,8 +84,12 @@ jobs:
           lib_deps =
               file://${{ github.workspace }}
               https://github.com/ESPressio-Development-Platform/ESPressio-Threads.git#optimisation/69-resource-footprint
-          build_unflags = -std=gnu++11
-          build_flags = -std=gnu++17
+          build_unflags =
+              -std=gnu++11
+              -fno-rtti
+          build_flags =
+              -std=gnu++17
+              -frtti
           EOF
           cat > /tmp/state-observer/src/main.cpp <<'EOF'
           #include <Arduino.h>
