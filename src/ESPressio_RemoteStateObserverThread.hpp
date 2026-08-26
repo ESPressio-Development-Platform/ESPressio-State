@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <tuple>
+#include <utility>
 
 #include <ESPressio_PrecisionThread.hpp>
 #include <ESPressio_PrecisionThreadTraits.hpp>
@@ -117,8 +118,16 @@ private:
 
     Manager& _manager;
     Observable::ObserverHandlePtr _managerHandle;
+
+    // Double-buffered dirty sets. Producers always write to the active sets.
+    // Drain swaps active and processing sets under the mutex, then performs all
+    // notifications from member-owned storage. This avoids copying the complete
+    // dirty arrays onto the PrecisionThread stack on every wake/iteration.
     std::array<DirtyState, MaximumDirtyStates> _dirtyStates{};
+    std::array<DirtyState, MaximumDirtyStates> _processingStates{};
     std::array<DirtyAvailability, TMaximumDevices> _dirtyAvailability{};
+    std::array<DirtyAvailability, TMaximumDevices> _processingAvailability{};
+
     std::array<DeliveredDevice, TMaximumDevices> _delivered{};
     std::shared_ptr<DispatchObservable> _observable =
         std::make_shared<DispatchObservable>();
@@ -224,22 +233,26 @@ private:
     }
 
     void Drain() {
-        std::array<DirtyState, MaximumDirtyStates> dirtyStates{};
-        std::array<DirtyAvailability, TMaximumDevices> dirtyAvailability{};
         {
             std::lock_guard<std::mutex> lock(_dirtyMutex);
-            dirtyStates = _dirtyStates;
-            dirtyAvailability = _dirtyAvailability;
-            _dirtyStates = {};
-            _dirtyAvailability = {};
+            _processingStates.swap(_dirtyStates);
+            _processingAvailability.swap(_dirtyAvailability);
         }
-        for (const auto& record : dirtyAvailability) {
+
+        for (auto& record : _processingAvailability) {
             if (!record.Used) continue;
-            _observable->AvailabilityChanged(record.Device, record.Previous, record.Current);
+            _observable->AvailabilityChanged(
+                record.Device,
+                record.Previous,
+                record.Current
+            );
+            record = DirtyAvailability{};
         }
-        for (const auto& record : dirtyStates) {
+
+        for (auto& record : _processingStates) {
             if (!record.Used) continue;
             NotifyState(record);
+            record = DirtyState{};
         }
     }
 
@@ -268,24 +281,19 @@ public:
     void ShutdownObserverThread() {
         _managerHandle.reset();
         _prepared = false;
+        {
+            std::lock_guard<std::mutex> lock(_dirtyMutex);
+            _dirtyStates = {};
+            _processingStates = {};
+            _dirtyAvailability = {};
+            _processingAvailability = {};
+        }
         _delivered = {};
         this->Shutdown();
     }
 
     bool IsPrepared() const noexcept { return _prepared; }
 
-    // Generic registration remains available for a single-interface observer.
-    Observable::ObserverHandlePtr RegisterObserver(Observable::IObserver* observer) {
-        return _observable->RegisterObserver(observer);
-    }
-
-    void UnregisterObserver(Observable::IObserver* observer) {
-        _observable->UnregisterObserver(observer);
-    }
-
-    // Prefer these helpers for observers implementing several State observer
-    // interfaces. They select one unambiguous IObserver base while Observable's
-    // RTTI cross-casts still expose all sibling observer interfaces.
     template<typename TDefinition>
     Observable::ObserverHandlePtr RegisterStateObserver(
         IRemoteStateObserver<TDefinition>* observer
@@ -294,13 +302,21 @@ public:
             TContract::template Contains<TDefinition>,
             "State definition is not part of this StateContract"
         );
-        return _observable->RegisterObserver(observer);
+        return _observable->template RegisterObserverAs<
+            IRemoteStateObserver<TDefinition>
+        >(observer);
     }
 
     Observable::ObserverHandlePtr RegisterAvailabilityObserver(
         IRemoteDeviceAvailabilityObserver* observer
     ) {
-        return _observable->RegisterObserver(observer);
+        return _observable->template RegisterObserverAs<
+            IRemoteDeviceAvailabilityObserver
+        >(observer);
+    }
+
+    void UnregisterObserver(Observable::IObserver* observer) {
+        _observable->UnregisterObserver(observer);
     }
 
     void OnRemoteStateAccepted(
@@ -339,5 +355,5 @@ private:
     }
 };
 
-}
-}
+} // namespace State
+} // namespace ESPressio
