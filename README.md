@@ -346,10 +346,10 @@ This is intentional: Serial output can affect timing and remains developer opt-i
 
 # Dependencies
 
-The core package currently declares:
+The active development package currently resolves:
 
 ```text
-ESPressio Observable >=3.0.2 <4.0.0
+ESPressio Observable 3.0.2 (Git-pinned)
 ```
 
 C++17 and RTTI are required by the current Observable observer model.
@@ -371,6 +371,13 @@ Those dependencies are consumed only by optional integration layers that need th
 ```ini
 lib_deps =
     https://github.com/ESPressio-Development-Platform/ESPressio-State.git#feature/1-state-foundation
+```
+
+Because State uses C++17 language features, PlatformIO applications targeting Arduino-ESP32 versions whose framework defaults to GNU++11 must remove that default and select C++17 explicitly:
+
+```ini
+build_unflags = -std=gnu++11
+build_flags = -std=gnu++17
 ```
 
 # State vs Event vs Command
