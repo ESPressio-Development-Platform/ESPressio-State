@@ -54,6 +54,36 @@ public:
     void OnStatePublicationStaleAcknowledgement(const DeviceIdentifier&, StateTypeId, StateEpoch, StateRevision) override { ++StaleAcknowledgements; }
 };
 
+class ReentrantSubscriptionObserver final : public IStateSubscriptionRegistryObserver {
+public:
+    StateSubscriptionRegistry<3>* Registry = nullptr;
+    DeviceIdentifier ProbeDevice{};
+    bool SawSubscribedState = false;
+    bool SawUnsubscribedState = false;
+
+    void OnStateSubscribed(
+        StateTypeId typeId,
+        StateSubscriptionScope,
+        const DeviceIdentifier&
+    ) override {
+        assert(Registry != nullptr);
+        // Regression for #12: this synchronous re-entry deadlocked when the
+        // registry dispatched Observer callbacks while still holding _mutex.
+        SawSubscribedState = Registry->IsSubscribed(ProbeDevice, typeId);
+        assert(Registry->Count() > 0);
+    }
+
+    void OnStateUnsubscribed(
+        StateTypeId typeId,
+        StateSubscriptionScope,
+        const DeviceIdentifier&
+    ) override {
+        assert(Registry != nullptr);
+        SawUnsubscribedState = !Registry->IsSubscribed(ProbeDevice, typeId);
+        (void)Registry->Count();
+    }
+};
+
 int main() {
     static_assert(Contract::StateCount == 3);
     static_assert(Contract::IndexOf<FrontGyroscope>() == 0);
@@ -87,7 +117,12 @@ int main() {
 
     StateSubscriptionRegistry<3> subscriptions;
     auto subscriptionHandle = subscriptions.RegisterObserver(static_cast<IStateSubscriptionRegistryObserver*>(&observer));
+    ReentrantSubscriptionObserver reentrantObserver;
+    reentrantObserver.Registry = &subscriptions;
+    reentrantObserver.ProbeDevice = otherDevice;
+    auto reentrantHandle = subscriptions.RegisterObserver(&reentrantObserver);
     assert(subscriptions.Subscribe<FrontGyroscope>());
+    assert(reentrantObserver.SawSubscribedState);
     assert(subscriptions.Subscribe<RearGyroscope>(StateSubscription<RearGyroscope>::From(device)));
     assert(subscriptions.IsSubscribed<FrontGyroscope>(otherDevice));
     assert(subscriptions.IsSubscribed(otherDevice, StateTypeIdOf<FrontGyroscope>));
@@ -95,6 +130,7 @@ int main() {
     assert(!subscriptions.IsSubscribed<RearGyroscope>(otherDevice));
     assert(!subscriptions.IsSubscribed(otherDevice, StateTypeIdOf<RearGyroscope>));
     assert(subscriptions.Unsubscribe<FrontGyroscope>());
+    assert(reentrantObserver.SawUnsubscribedState);
     assert(observer.Subscribed == 2 && observer.Unsubscribed == 1);
 
     StateSubscriberRegistry<Contract, 2> remoteSubscribers;
