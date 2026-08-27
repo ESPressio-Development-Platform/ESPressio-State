@@ -95,40 +95,59 @@ public:
     template<typename TDefinition>
     bool Subscribe(const StateSubscription<TDefinition>& subscription = StateSubscription<TDefinition>::Any()) {
         const Descriptor descriptor{StateTypeIdOf<TDefinition>, subscription.Scope, subscription.Device};
+        bool added = false;
+        bool capacityExhausted = false;
         {
             std::lock_guard<std::mutex> lock(_mutex);
             for (const auto& record : _records) {
                 if (record.Used && record.Subscription.TypeId == descriptor.TypeId &&
-                    record.Subscription.Scope == descriptor.Scope && record.Subscription.Device == descriptor.Device) return true;
+                    record.Subscription.Scope == descriptor.Scope && record.Subscription.Device == descriptor.Device) {
+                    return true;
+                }
             }
             for (auto& record : _records) {
                 if (!record.Used) {
                     record.Used = true;
                     record.Subscription = descriptor;
-                    _observable->Subscribed(descriptor.TypeId, descriptor.Scope, descriptor.Device);
-                    return true;
+                    added = true;
+                    break;
                 }
             }
+            if (!added) capacityExhausted = true;
         }
-        _observable->CapacityExhausted(descriptor.TypeId, descriptor.Scope, descriptor.Device);
+
+        // Observer/transport code may synchronously call back into the registry
+        // (for example when a Subscribe immediately produces an initial State
+        // snapshot). Never execute that code while the registry mutex is held.
+        if (added) {
+            _observable->Subscribed(descriptor.TypeId, descriptor.Scope, descriptor.Device);
+            return true;
+        }
+        if (capacityExhausted) {
+            _observable->CapacityExhausted(descriptor.TypeId, descriptor.Scope, descriptor.Device);
+        }
         return false;
     }
 
     template<typename TDefinition>
     bool Unsubscribe(const StateSubscription<TDefinition>& subscription = StateSubscription<TDefinition>::Any()) {
         const Descriptor descriptor{StateTypeIdOf<TDefinition>, subscription.Scope, subscription.Device};
+        bool removed = false;
         {
             std::lock_guard<std::mutex> lock(_mutex);
             for (auto& record : _records) {
                 if (record.Used && record.Subscription.TypeId == descriptor.TypeId &&
                     record.Subscription.Scope == descriptor.Scope && record.Subscription.Device == descriptor.Device) {
                     record = Record{};
-                    _observable->Unsubscribed(descriptor.TypeId, descriptor.Scope, descriptor.Device);
-                    return true;
+                    removed = true;
+                    break;
                 }
             }
         }
-        return false;
+        if (removed) {
+            _observable->Unsubscribed(descriptor.TypeId, descriptor.Scope, descriptor.Device);
+        }
+        return removed;
     }
 
     bool IsSubscribed(const DeviceIdentifier& device, StateTypeId typeId) const {
