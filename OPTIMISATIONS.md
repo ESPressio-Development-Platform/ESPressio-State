@@ -7,3 +7,5 @@
 - **#10** Moved remote device iteration snapshots off the caller stack into external-preferred temporary storage.
 - **#10** Moved `ManagerObservable` shared allocation to external-preferred storage.
 - **#10** Preserved forwarding/move semantics for accepted incoming State values and retained copies only where caller snapshots must remain independent of authoritative storage.
+- **#10** Moved the fixed-capacity `StateSubscriberRegistry` backing table to System `ExternalPreferred` storage while preserving its configured capacity and lock semantics.
+- **#10** Moved subscriber/type iteration snapshots to external-preferred temporary storage and moved the registry Observable allocation to the System allocator.
