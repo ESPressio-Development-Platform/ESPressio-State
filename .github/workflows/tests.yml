@@ -14,6 +14,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout System working branch
+        uses: actions/checkout@v4
+        with:
+          repository: ESPressio-Development-Platform/ESPressio-System
+          ref: feature/1-system-memory-policy
+          path: ESPressio-System
       - name: Checkout Observable working branch
         uses: actions/checkout@v4
         with:
@@ -23,6 +29,7 @@ jobs:
       - name: Configure
         run: >-
           cmake -S tests -B build
+          -DESPRESSIO_SYSTEM_DIR=${{ github.workspace }}/ESPressio-System/src
           -DESPRESSIO_OBSERVABLE_DIR=${{ github.workspace }}/ESPressio-Observable/src
       - name: Build
         run: cmake --build build --parallel
@@ -34,8 +41,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
+        with: {python-version: '3.x'}
       - run: pip install platformio
       - name: Create RTTI-free core integration project
         run: |
@@ -47,12 +53,10 @@ jobs:
           framework = arduino
           lib_deps =
               file://${{ github.workspace }}
+              https://github.com/ESPressio-Development-Platform/ESPressio-System.git#feature/1-system-memory-policy
               https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#feature/16-rtti-free-observer-registry
-          build_unflags =
-              -std=gnu++11
-          build_flags =
-              -std=gnu++17
-              -fno-rtti
+          build_unflags = -std=gnu++11
+          build_flags = -std=gnu++17 -fno-rtti
           EOF
           cat > /tmp/state-core/src/main.cpp <<'EOF'
           #include <Arduino.h>
@@ -75,8 +79,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
+        with: {python-version: '3.x'}
       - run: pip install platformio
       - name: Create RTTI-free diagnostic integration project
         run: |
@@ -88,50 +91,28 @@ jobs:
           framework = arduino
           lib_deps =
               file://${{ github.workspace }}
+              https://github.com/ESPressio-Development-Platform/ESPressio-System.git#feature/1-system-memory-policy
               https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#feature/16-rtti-free-observer-registry
-          build_unflags =
-              -std=gnu++11
-          build_flags =
-              -std=gnu++17
-              -fno-rtti
+          build_unflags = -std=gnu++11
+          build_flags = -std=gnu++17 -fno-rtti
           EOF
           cat > /tmp/state-diagnostics/src/main.cpp <<'EOF'
           #include <Arduino.h>
           #include <ESPressio_State.hpp>
           #include <ESPressio_StateIntrospection.hpp>
           #include <ESPressio_StateSerialization.hpp>
-
-          struct LedState {
-              using Value = bool;
-              static constexpr ESPressio::State::StateTypeId Id = 1;
-              static constexpr const char* Name = "led.enabled";
-          };
-          struct CounterState {
-              using Value = uint32_t;
-              static constexpr ESPressio::State::StateTypeId Id = 2;
-          };
+          struct LedState { using Value = bool; static constexpr ESPressio::State::StateTypeId Id = 1; static constexpr const char* Name = "led.enabled"; };
+          struct CounterState { using Value = uint32_t; static constexpr ESPressio::State::StateTypeId Id = 2; };
           using Contract = ESPressio::State::StateContract<LedState, CounterState>;
           ESPressio::State::RemoteStateManager<Contract, 2> remoteState;
-
           void setup() {
-              const uint8_t mac[6] = {1, 2, 3, 4, 5, 6};
+              const uint8_t mac[6] = {1,2,3,4,5,6};
               const auto device = ESPressio::State::DeviceIdentifier::FromMacAddress(mac);
-              remoteState.Apply<LedState>(device, 1, 1, true);
-              remoteState.Apply<CounterState>(device, 1, 1, 42);
-
+              remoteState.Apply<LedState>(device,1,1,true);
+              remoteState.Apply<CounterState>(device,1,1,42);
               const char* name = nullptr;
-              ESPressio::State::StateIntrospection<Contract>::TryGetName(
-                  LedState::Id,
-                  name
-              );
-
-              ESPressio::State::StateSerialization<Contract>::ForEachRemoteState(
-                  remoteState,
-                  [](const auto& record) {
-                      (void)record.TypeId;
-                      (void)record.PayloadSize;
-                  }
-              );
+              ESPressio::State::StateIntrospection<Contract>::TryGetName(LedState::Id,name);
+              ESPressio::State::StateSerialization<Contract>::ForEachRemoteState(remoteState,[](const auto& record){ (void)record.TypeId; (void)record.PayloadSize; });
           }
           void loop() {}
           EOF
@@ -142,8 +123,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
+        with: {python-version: '3.x'}
       - run: pip install platformio
       - name: Create RTTI-free observer integration project
         run: |
@@ -155,63 +135,30 @@ jobs:
           framework = arduino
           lib_deps =
               file://${{ github.workspace }}
+              https://github.com/ESPressio-Development-Platform/ESPressio-System.git#feature/1-system-memory-policy
               https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#feature/16-rtti-free-observer-registry
               https://github.com/ESPressio-Development-Platform/ESPressio-Units.git#main
               https://github.com/ESPressio-Development-Platform/ESPressio-Timing.git#main
               https://github.com/ESPressio-Development-Platform/ESPressio-Threads.git#optimisation/69-resource-footprint
-          build_unflags =
-              -std=gnu++11
-              -frtti
-          build_flags =
-              -std=gnu++17
-              -fno-rtti
+          build_unflags = -std=gnu++11 -frtti
+          build_flags = -std=gnu++17 -fno-rtti
           EOF
           cat > /tmp/state-observer/src/main.cpp <<'EOF'
           #include <Arduino.h>
           #include <ESPressio_State.hpp>
           #include <ESPressio_RemoteStateObserverThread.hpp>
-
-          struct LedState {
-              using Value = bool;
-              static constexpr ESPressio::State::StateTypeId Id = 1;
-          };
+          struct LedState { using Value = bool; static constexpr ESPressio::State::StateTypeId Id = 1; };
           using Contract = ESPressio::State::StateContract<LedState>;
-
-          class LedObserver final :
-              public ESPressio::State::IRemoteStateObserver<LedState>,
-              public ESPressio::State::IRemoteDeviceAvailabilityObserver {
+          class LedObserver final : public ESPressio::State::IRemoteStateObserver<LedState>, public ESPressio::State::IRemoteDeviceAvailabilityObserver {
           public:
-              void OnRemoteStateChanged(
-                  ESPressio::State::StateTag<LedState>,
-                  const ESPressio::State::DeviceIdentifier&,
-                  bool hasPreviousValue,
-                  const bool& previousValue,
-                  const bool& latestValue,
-                  ESPressio::State::StateEpoch,
-                  ESPressio::State::StateRevision,
-                  ESPressio::State::RemoteDeviceAvailability
-              ) override {
-                  (void)hasPreviousValue;
-                  (void)previousValue;
-                  (void)latestValue;
-              }
-
-              void OnRemoteDeviceAvailabilityChanged(
-                  const ESPressio::State::DeviceIdentifier&,
-                  ESPressio::State::RemoteDeviceAvailability,
-                  ESPressio::State::RemoteDeviceAvailability
-              ) override {}
+              void OnRemoteStateChanged(ESPressio::State::StateTag<LedState>, const ESPressio::State::DeviceIdentifier&, bool hasPreviousValue, const bool& previousValue, const bool& latestValue, ESPressio::State::StateEpoch, ESPressio::State::StateRevision, ESPressio::State::RemoteDeviceAvailability) override { (void)hasPreviousValue; (void)previousValue; (void)latestValue; }
+              void OnRemoteDeviceAvailabilityChanged(const ESPressio::State::DeviceIdentifier&, ESPressio::State::RemoteDeviceAvailability, ESPressio::State::RemoteDeviceAvailability) override {}
           };
-
-          ESPressio::State::RemoteStateManager<Contract, 2> remoteState;
-          ESPressio::State::RemoteStateObserverThread<Contract, 2> observerThread(remoteState);
+          ESPressio::State::RemoteStateManager<Contract,2> remoteState;
+          ESPressio::State::RemoteStateObserverThread<Contract,2> observerThread(remoteState);
           LedObserver observer;
           ESPressio::Observable::ObserverHandlePtr observerHandle;
-
-          void setup() {
-              observerHandle = observerThread.RegisterStateObserver<LedState>(&observer);
-              observerThread.Prepare();
-          }
+          void setup(){ observerHandle=observerThread.RegisterStateObserver<LedState>(&observer); observerThread.Prepare(); }
           void loop() {}
           EOF
       - run: pio run -d /tmp/state-observer
