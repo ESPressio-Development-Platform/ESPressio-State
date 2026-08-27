@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 
+#include <ESPressio_Memory.hpp>
 #include <ESPressio_ThreadSafeObservable.hpp>
 
 #include "ESPressio_DeviceIdentifier.hpp"
@@ -65,10 +66,17 @@ class StateSubscriberRegistry final {
         std::array<bool, TContract::StateCount> States{};
     };
 
-    std::array<SubscriberRecord, TMaximumSubscribers> _subscribers{};
+    using ExternalMemory = System::Memory::MemoryPolicy;
+    System::Memory::Vector<SubscriberRecord, ExternalMemory::ExternalPreferred>
+        _subscribers = System::Memory::Vector<SubscriberRecord, ExternalMemory::ExternalPreferred>(
+            TMaximumSubscribers
+        );
     mutable std::mutex _mutex;
     std::shared_ptr<RegistryObservable> _observable =
-        std::make_shared<RegistryObservable>();
+        System::Memory::MakeShared<
+            RegistryObservable,
+            ExternalMemory::ExternalPreferred
+        >();
 
     SubscriberRecord* FindLocked(const DeviceIdentifier& device) {
         for (auto& subscriber : _subscribers) {
@@ -195,17 +203,20 @@ public:
     void ForEachSubscriber(StateTypeId typeId, TCallback&& callback) const {
         std::size_t index = 0;
         if (!TContract::TryIndexOf(typeId, index)) return;
-        std::array<DeviceIdentifier, TMaximumSubscribers> matches{};
-        std::size_t count = 0;
+        System::Memory::Vector<
+            DeviceIdentifier,
+            ExternalMemory::ExternalPreferred
+        > matches;
+        matches.reserve(TMaximumSubscribers);
         {
             std::lock_guard<std::mutex> lock(_mutex);
             for (const auto& subscriber : _subscribers) {
                 if (subscriber.Used && subscriber.States[index]) {
-                    matches[count++] = subscriber.Device;
+                    matches.push_back(subscriber.Device);
                 }
             }
         }
-        for (std::size_t i = 0; i < count; ++i) callback(matches[i]);
+        for (const auto& device : matches) callback(device);
     }
 
     template<typename TCallback>
@@ -213,21 +224,24 @@ public:
         const DeviceIdentifier& device,
         TCallback&& callback
     ) const {
-        std::array<StateTypeId, TContract::StateCount> types{};
-        std::size_t count = 0;
+        System::Memory::Vector<
+            StateTypeId,
+            ExternalMemory::ExternalPreferred
+        > types;
+        types.reserve(TContract::StateCount);
         {
             std::lock_guard<std::mutex> lock(_mutex);
             for (const auto& subscriber : _subscribers) {
                 if (!subscriber.Used || subscriber.Device != device) continue;
                 for (std::size_t index = 0; index < TContract::StateCount; ++index) {
                     if (subscriber.States[index]) {
-                        types[count++] = TContract::TypeIds[index];
+                        types.push_back(TContract::TypeIds[index]);
                     }
                 }
                 break;
             }
         }
-        for (std::size_t index = 0; index < count; ++index) callback(types[index]);
+        for (StateTypeId type : types) callback(type);
     }
 };
 
