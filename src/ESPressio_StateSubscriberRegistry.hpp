@@ -15,6 +15,10 @@
 namespace ESPressio {
 namespace State {
 
+/// <summary>Tracks remote devices subscribed to individual State definitions in a contract.</summary>
+/// <typeparam name="TContract">State contract whose type IDs define the subscription bitset.</typeparam>
+/// <typeparam name="TMaximumSubscribers">Maximum number of remote devices retained by the registry.</typeparam>
+/// <remarks>Subscription records are bounded and stored in external-preferred memory. Observer callbacks are emitted after releasing the registry mutex.</remarks>
 template<typename TContract, std::size_t TMaximumSubscribers>
 class StateSubscriberRegistry final {
     class RegistryObservable final : public Observable::ThreadSafeObservable {
@@ -99,8 +103,12 @@ class StateSubscriberRegistry final {
     }
 
 public:
+    /// <summary>Maximum number of remote subscriber devices retained simultaneously.</summary>
     static constexpr std::size_t MaximumSubscribers = TMaximumSubscribers;
 
+    /// <summary>Registers an observer for remote-subscriber registry changes.</summary>
+    /// <param name="observer">Observer to register.</param>
+    /// <returns>An RAII observer handle whose destruction unregisters the observer.</returns>
     Observable::ObserverHandlePtr RegisterObserver(
         IStateSubscriberRegistryObserver* observer
     ) {
@@ -109,10 +117,15 @@ public:
         >(observer);
     }
 
+    /// <summary>Explicitly unregisters a previously registered subscriber-registry observer.</summary>
     void UnregisterObserver(IStateSubscriberRegistryObserver* observer) {
         _observable->UnregisterObserver(observer);
     }
 
+    /// <summary>Adds a remote device subscription for the supplied State type.</summary>
+    /// <param name="device">Remote subscriber identity.</param>
+    /// <param name="typeId">State type identifier from <typeparamref name="TContract"/>.</param>
+    /// <returns><c>false</c> when the type is not part of the contract or subscriber capacity is exhausted; otherwise <c>true</c>, including an already-active subscription.</returns>
     bool Subscribe(const DeviceIdentifier& device, StateTypeId typeId) {
         std::size_t index = 0;
         if (!TContract::TryIndexOf(typeId, index)) return false;
@@ -138,6 +151,8 @@ public:
         return true;
     }
 
+    /// <summary>Removes a remote device subscription for the supplied State type.</summary>
+    /// <returns><c>true</c> only when an active subscription was removed.</returns>
     bool Unsubscribe(const DeviceIdentifier& device, StateTypeId typeId) {
         std::size_t index = 0;
         if (!TContract::TryIndexOf(typeId, index)) return false;
@@ -154,6 +169,7 @@ public:
         return removed;
     }
 
+    /// <summary>Tests whether a remote device is subscribed to a State type.</summary>
     bool IsSubscribed(const DeviceIdentifier& device, StateTypeId typeId) const {
         std::size_t index = 0;
         if (!TContract::TryIndexOf(typeId, index)) return false;
@@ -166,11 +182,13 @@ public:
         return false;
     }
 
+    /// <summary>Tests whether a remote device is subscribed to a typed State definition.</summary>
     template<typename TDefinition>
     bool IsSubscribed(const DeviceIdentifier& device) const {
         return IsSubscribed(device, StateTypeIdOf<TDefinition>);
     }
 
+    /// <summary>Tests whether at least one remote device subscribes to the supplied State type.</summary>
     bool HasSubscribers(StateTypeId typeId) const {
         std::size_t index = 0;
         if (!TContract::TryIndexOf(typeId, index)) return false;
@@ -181,11 +199,14 @@ public:
         return false;
     }
 
+    /// <summary>Tests whether at least one remote device subscribes to a typed State definition.</summary>
     template<typename TDefinition>
     bool HasSubscribers() const {
         return HasSubscribers(StateTypeIdOf<TDefinition>);
     }
 
+    /// <summary>Removes all subscription state for a remote device.</summary>
+    /// <returns><c>true</c> when a subscriber record was present and removed.</returns>
     bool Remove(const DeviceIdentifier& device) {
         bool removed = false;
         {
@@ -199,6 +220,9 @@ public:
         return removed;
     }
 
+    /// <summary>Invokes a callback once for each remote device subscribed to the supplied State type.</summary>
+    /// <typeparam name="TCallback">Callable accepting <c>const DeviceIdentifier&amp;</c>.</typeparam>
+    /// <remarks>A snapshot is built while locked and callbacks execute after releasing the registry mutex, allowing safe re-entry into registry operations.</remarks>
     template<typename TCallback>
     void ForEachSubscriber(StateTypeId typeId, TCallback&& callback) const {
         std::size_t index = 0;
@@ -219,6 +243,9 @@ public:
         for (const auto& device : matches) callback(device);
     }
 
+    /// <summary>Invokes a callback once for each State type to which a remote device is subscribed.</summary>
+    /// <typeparam name="TCallback">Callable accepting a <c>StateTypeId</c>.</typeparam>
+    /// <remarks>Type IDs are snapshotted before callbacks execute so callbacks may safely mutate subscriptions.</remarks>
     template<typename TCallback>
     void ForEachSubscribedType(
         const DeviceIdentifier& device,
