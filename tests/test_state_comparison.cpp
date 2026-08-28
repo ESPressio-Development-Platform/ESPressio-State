@@ -53,6 +53,22 @@ public:
     }
 };
 
+class PublisherObserver final : public IStatePublishedObserver<DeadbandAnalogState> {
+public:
+    int Published = 0;
+    StateRevision LastRevision = 0;
+    AnalogValue LastValue{};
+
+    void OnStatePublished(
+        StateTag<DeadbandAnalogState>,
+        const StateUpdate<AnalogValue>& update
+    ) override {
+        ++Published;
+        LastRevision = update.Header.Revision;
+        LastValue = update.Value;
+    }
+};
+
 int main() {
     const AnalogValue baseline{100};
     const AnalogValue noise{104};
@@ -71,10 +87,42 @@ int main() {
     // The comparison is keyed by State definition, even with the same Value type.
     static_assert(StateTypeIdOf<ExactAnalogState> != StateTypeIdOf<DeadbandAnalogState>);
 
+    // Publisher revisions and observer notifications represent meaningful
+    // changes, not calls to Publish(). Values inside a definition-specific
+    // deadband are successful no-ops and consume no revision.
+    using Contract = StateContract<DeadbandAnalogState>;
+    StatePublisher<Contract> publisher;
+    PublisherObserver publisherObserver;
+    auto publisherHandle =
+        publisher.RegisterPublishedObserver<DeadbandAnalogState>(&publisherObserver);
+    assert(publisherHandle);
+
+    assert(publisher.Publish<DeadbandAnalogState>(baseline));
+    assert(publisherObserver.Published == 1);
+    assert(publisherObserver.LastRevision == 1);
+    assert(publisherObserver.LastValue.Value == 100);
+
+    assert(publisher.Publish<DeadbandAnalogState>(noise));
+    assert(publisherObserver.Published == 1);
+    assert(publisherObserver.LastRevision == 1);
+
+    assert(publisher.Publish<DeadbandAnalogState>(meaningful));
+    assert(publisherObserver.Published == 2);
+    assert(publisherObserver.LastRevision == 2);
+    assert(publisherObserver.LastValue.Value == 106);
+
+    // Replacing a source establishes a fresh baseline while preserving the
+    // monotonically increasing revision sequence within the current epoch.
+    assert(publisher.RegisterSource<DeadbandAnalogState>([&]() { return meaningful; }));
+    assert(publisher.Publish<DeadbandAnalogState>());
+    assert(publisherObserver.Published == 3);
+    assert(publisherObserver.LastRevision == 3);
+    assert(publisher.Publish<DeadbandAnalogState>());
+    assert(publisherObserver.Published == 3);
+
     // Once an origin publishes a newer revision, the receiver trusts that
     // source-side meaningful-change decision. It does not apply its own
     // deadband against a potentially different join/resync baseline.
-    using Contract = StateContract<DeadbandAnalogState>;
     RemoteStateManager<Contract, 1> manager;
     ComparisonObserver observer;
     auto handle = manager.RegisterObserver(static_cast<IRemoteStateManagerObserver*>(&observer));
