@@ -29,6 +29,10 @@
 namespace ESPressio {
 namespace State {
 
+/// <summary>Moves remote-state change notifications onto a dedicated precision-thread execution context.</summary>
+/// <typeparam name="TContract">State contract observed by the thread.</typeparam>
+/// <typeparam name="TMaximumDevices">Maximum remote-device capacity of the associated manager.</typeparam>
+/// <remarks>Manager callbacks only mark bounded dirty-state sets and wake the worker; observer callbacks are dispatched later from the thread context.</remarks>
 template<typename TContract, std::size_t TMaximumDevices>
 class RemoteStateObserverThread final :
     public Threads::PrecisionThread<
@@ -37,8 +41,11 @@ class RemoteStateObserverThread final :
     >,
     public IRemoteStateManagerObserver {
 public:
+    /// <summary>Remote-state manager type consumed by this observer thread.</summary>
     using Manager = RemoteStateManager<TContract, TMaximumDevices>;
+    /// <summary>Time-unit type used by the precision-thread base.</summary>
     using Time = Units::NanoSeconds<uint64_t>;
+    /// <summary>Precision-thread base type.</summary>
     using Base = Threads::PrecisionThread<
         Time,
         Threads::PrecisionThreadTraits<Time>
@@ -257,10 +264,13 @@ private:
     }
 
 protected:
+    /// <summary>Drains pending remote-state notifications when the worker is explicitly woken.</summary>
     void OnWorkWake() override { Drain(); }
+    /// <summary>Drains pending remote-state notifications during the periodic precision-thread iteration.</summary>
     void Iterate(Time, Time, Threads::SkippedIterationCount) override { Drain(); }
 
 public:
+    /// <summary>Creates an observer thread bound to the supplied remote-state manager.</summary>
     explicit RemoteStateObserverThread(Manager& manager)
         : Base(), _manager(manager) {
         this->SetStartOnInitialize(false);
@@ -269,6 +279,8 @@ public:
         this->SetIterationPeriod(Units::MilliSeconds<uint32_t>(1000));
     }
 
+    /// <summary>Registers the thread with its remote-state manager before the worker is started.</summary>
+    /// <returns><c>true</c> when the manager observer registration is active.</returns>
     bool Prepare() {
         if (_prepared) return true;
         _managerHandle = _manager.RegisterObserver(
@@ -278,6 +290,7 @@ public:
         return _prepared;
     }
 
+    /// <summary>Detaches from the manager, clears pending delivery state, and shuts down the worker thread.</summary>
     void ShutdownObserverThread() {
         _managerHandle.reset();
         _prepared = false;
@@ -292,8 +305,10 @@ public:
         this->Shutdown();
     }
 
+    /// <summary>Indicates whether the manager observer registration has been prepared.</summary>
     bool IsPrepared() const noexcept { return _prepared; }
 
+    /// <summary>Registers an observer for asynchronously delivered changes to one typed remote state.</summary>
     template<typename TDefinition>
     Observable::ObserverHandlePtr RegisterStateObserver(
         IRemoteStateObserver<TDefinition>* observer
@@ -307,6 +322,7 @@ public:
         >(observer);
     }
 
+    /// <summary>Registers an observer for asynchronously delivered remote-device availability changes.</summary>
     Observable::ObserverHandlePtr RegisterAvailabilityObserver(
         IRemoteDeviceAvailabilityObserver* observer
     ) {
@@ -315,10 +331,12 @@ public:
         >(observer);
     }
 
+    /// <summary>Unregisters a previously registered dispatch observer.</summary>
     void UnregisterObserver(Observable::IObserver* observer) {
         _observable->UnregisterObserver(observer);
     }
 
+    /// <summary>Marks a meaningfully changed accepted state for deferred thread-context delivery.</summary>
     void OnRemoteStateAccepted(
         const DeviceIdentifier& device,
         StateTypeId typeId,
@@ -331,6 +349,7 @@ public:
         this->WakeForWork();
     }
 
+    /// <summary>Marks an availability transition and the device's state set for deferred thread-context delivery.</summary>
     void OnRemoteStateAvailabilityChanged(
         const DeviceIdentifier& device,
         RemoteDeviceAvailability previous,

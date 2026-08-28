@@ -11,11 +11,15 @@
 namespace ESPressio {
 namespace State {
 
+/// <summary>Encodes and decodes the versioned binary wire protocol used by ESPressio State transports.</summary>
 class StateProtocol final {
 public:
+    /// <summary>Two-byte protocol discriminator corresponding to ASCII <c>ST</c>.</summary>
     static constexpr uint16_t Magic = 0x5354; // "ST"
+    /// <summary>Current State wire-protocol version.</summary>
     static constexpr uint8_t Version = 1;
 
+    /// <summary>Identifies the State wire message carried by a protocol frame.</summary>
     enum class MessageType : uint8_t {
         Update = 1,
         Acknowledgement = 2,
@@ -27,21 +31,33 @@ public:
         UnsubscribeAcknowledgement = 8
     };
 
+    /// <summary>Decoded or encodable State control-plane message.</summary>
     struct ControlMessage {
+        /// <summary>Control operation represented by the message.</summary>
         MessageType Type = MessageType::Subscribe;
+        /// <summary>Device associated with the control operation.</summary>
         DeviceIdentifier Device{};
+        /// <summary>Stable state type identifier associated with the operation.</summary>
         StateTypeId TypeId = 0;
     };
 
+    /// <summary>Decoded State update header plus a non-owning view of its encoded value payload.</summary>
     struct ParsedUpdate {
+        /// <summary>Decoded state-update metadata.</summary>
         StateUpdateHeader Header{};
+        /// <summary>Pointer into the decoded frame at the encoded state value.</summary>
         const uint8_t* Payload = nullptr;
+        /// <summary>Number of encoded state-value bytes.</summary>
         std::size_t PayloadSize = 0;
     };
 
+    /// <summary>Encoded size of the common protocol header.</summary>
     static constexpr std::size_t CommonHeaderSize = 4;
+    /// <summary>Encoded size of an update frame before its value payload.</summary>
     static constexpr std::size_t UpdateHeaderSize = 42;
+    /// <summary>Encoded size of an acknowledgement frame.</summary>
     static constexpr std::size_t AcknowledgementSize = 40;
+    /// <summary>Encoded size of a control frame.</summary>
     static constexpr std::size_t ControlSize = 28;
 
 private:
@@ -117,6 +133,11 @@ private:
     }
 
 public:
+    /// <summary>Reads and validates the common frame header and returns its message type.</summary>
+    /// <param name="input">Encoded frame bytes.</param>
+    /// <param name="size">Encoded frame size.</param>
+    /// <param name="type">Receives the decoded message type.</param>
+    /// <returns><c>true</c> when the frame has the expected magic and protocol version.</returns>
     static bool GetMessageType(
         const uint8_t* input,
         std::size_t size,
@@ -125,6 +146,13 @@ public:
         return ReadCommon(input, size, type);
     }
 
+    /// <summary>Encodes a typed state update into a State protocol frame.</summary>
+    /// <typeparam name="TDefinition">State definition whose update is encoded.</typeparam>
+    /// <param name="update">Typed state update and metadata.</param>
+    /// <param name="output">Destination frame buffer.</param>
+    /// <param name="capacity">Destination capacity in bytes.</param>
+    /// <param name="size">Receives the encoded frame size.</param>
+    /// <returns><c>true</c> when the update and value payload are successfully encoded.</returns>
     template<typename TDefinition>
     static bool EncodeUpdate(
         const StateUpdate<StateValueType<TDefinition>>& update,
@@ -150,6 +178,7 @@ public:
         return true;
     }
 
+    /// <summary>Decodes an update frame into metadata and a non-owning encoded payload view.</summary>
     static bool DecodeUpdate(
         const uint8_t* input,
         std::size_t size,
@@ -170,6 +199,8 @@ public:
         return update.Header.TypeId != 0 && update.Header.Revision != 0;
     }
 
+    /// <summary>Decodes the typed value contained in a previously parsed update frame.</summary>
+    /// <typeparam name="TDefinition">Expected state definition.</typeparam>
     template<typename TDefinition>
     static bool DecodeValue(
         const ParsedUpdate& update,
@@ -179,6 +210,7 @@ public:
         return StateCodec<TDefinition>::Decode(update.Payload, update.PayloadSize, value);
     }
 
+    /// <summary>Encodes a state acknowledgement into a protocol frame.</summary>
     static bool EncodeAcknowledgement(
         const StateAcknowledgement& acknowledgement,
         uint8_t* output,
@@ -194,6 +226,7 @@ public:
         return true;
     }
 
+    /// <summary>Decodes a state acknowledgement frame.</summary>
     static bool DecodeAcknowledgement(
         const uint8_t* input,
         std::size_t size,
@@ -210,6 +243,7 @@ public:
         return acknowledgement.TypeId != 0 && acknowledgement.Revision != 0;
     }
 
+    /// <summary>Encodes a control-plane message into a protocol frame.</summary>
     static bool EncodeControl(
         const ControlMessage& control,
         uint8_t* output,
@@ -224,6 +258,7 @@ public:
         return true;
     }
 
+    /// <summary>Decodes a control-plane State protocol frame.</summary>
     static bool DecodeControl(
         const uint8_t* input,
         std::size_t size,

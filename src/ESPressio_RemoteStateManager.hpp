@@ -17,6 +17,7 @@
 namespace ESPressio {
 namespace State {
 
+/// <summary>Describes the currently known connectivity or freshness state of a remote device.</summary>
 enum class RemoteDeviceAvailability : uint8_t {
     Unknown = 0,
     Connected,
@@ -25,11 +26,15 @@ enum class RemoteDeviceAvailability : uint8_t {
     ConnectionLost
 };
 
+/// <summary>Lightweight snapshot of a known remote device and its availability.</summary>
 struct RemoteDeviceSnapshot {
+    /// <summary>Stable remote-device identifier.</summary>
     DeviceIdentifier Identifier{};
+    /// <summary>Current known device availability.</summary>
     RemoteDeviceAvailability Availability = RemoteDeviceAvailability::Unknown;
 };
 
+/// <summary>Internal typed storage for the latest accepted value and revision of one remote state.</summary>
 template<typename TValue>
 struct RemoteStateSlot {
     TValue Value{};
@@ -38,27 +43,40 @@ struct RemoteStateSlot {
     bool HasValue = false;
 };
 
+/// <summary>Read-only snapshot of one typed remote state and its owning device's availability.</summary>
 template<typename TValue>
 struct RemoteStateSnapshot {
+    /// <summary>Latest accepted state value.</summary>
     TValue Value{};
+    /// <summary>Epoch associated with the latest accepted value.</summary>
     StateEpoch Epoch = 0;
+    /// <summary>Revision associated with the latest accepted value.</summary>
     StateRevision Revision = 0;
+    /// <summary>Current known availability of the owning remote device.</summary>
     RemoteDeviceAvailability Availability = RemoteDeviceAvailability::Unknown;
+    /// <summary>Indicates whether a value has yet been accepted for this state.</summary>
     bool HasValue = false;
 };
 
+/// <summary>Maps a state contract to its tuple of typed remote-state slots.</summary>
 template<typename TContract>
 struct RemoteStateTuple;
 
 template<typename... TDefinitions>
 struct RemoteStateTuple<StateContract<TDefinitions...>> {
+    /// <summary>Tuple containing one typed remote-state slot per contract definition.</summary>
     using Type = std::tuple<RemoteStateSlot<StateValueType<TDefinitions>>...>;
 };
 
+/// <summary>Maintains bounded typed state snapshots and availability for remote devices.</summary>
+/// <typeparam name="TContract">State contract accepted by the manager.</typeparam>
+/// <typeparam name="TMaximumDevices">Maximum number of remote devices retained simultaneously.</typeparam>
 template<typename TContract, std::size_t TMaximumDevices>
 class RemoteStateManager final {
 public:
+    /// <summary>State contract accepted by this manager.</summary>
     using Contract = TContract;
+    /// <summary>Maximum number of remote-device records retained by this manager.</summary>
     static constexpr std::size_t MaximumDevices = TMaximumDevices;
 
 private:
@@ -213,6 +231,7 @@ private:
     }
 
 public:
+    /// <summary>Creates an empty bounded remote-state manager.</summary>
     RemoteStateManager()
         : _devices(TMaximumDevices),
           _observable(System::Memory::MakeShared<
@@ -220,14 +239,19 @@ public:
               System::Memory::MemoryPolicy::ExternalPreferred
           >()) {}
 
+    /// <summary>Registers an observer for manager-level remote-state and availability events.</summary>
     Observable::ObserverHandlePtr RegisterObserver(IRemoteStateManagerObserver* observer) {
         return _observable->template RegisterObserverAs<IRemoteStateManagerObserver>(observer);
     }
 
+    /// <summary>Unregisters a previously registered manager observer.</summary>
     void UnregisterObserver(Observable::IObserver* observer) {
         _observable->UnregisterObserver(observer);
     }
 
+    /// <summary>Reads the latest snapshot for one typed state on a remote device.</summary>
+    /// <typeparam name="TDefinition">State definition to read.</typeparam>
+    /// <returns><c>true</c> when the remote device is known.</returns>
     template<typename TDefinition>
     bool Read(
         const DeviceIdentifier& identifier,
@@ -247,6 +271,7 @@ public:
         return true;
     }
 
+    /// <summary>Applies a copied remote-state value when its epoch/revision is newer than the retained value.</summary>
     template<typename TDefinition>
     bool Apply(
         const DeviceIdentifier& identifier,
@@ -257,6 +282,7 @@ public:
         return ApplyValue<TDefinition>(identifier, epoch, revision, value);
     }
 
+    /// <summary>Applies a moved remote-state value when its epoch/revision is newer than the retained value.</summary>
     template<typename TDefinition>
     bool Apply(
         const DeviceIdentifier& identifier,
@@ -267,6 +293,7 @@ public:
         return ApplyValue<TDefinition>(identifier, epoch, revision, std::move(value));
     }
 
+    /// <summary>Sets the known availability of a remote device, creating its record when capacity permits.</summary>
     bool SetAvailability(
         const DeviceIdentifier& identifier,
         RemoteDeviceAvailability availability
@@ -287,12 +314,14 @@ public:
         return true;
     }
 
+    /// <summary>Gets the known availability of a remote device.</summary>
     RemoteDeviceAvailability GetAvailability(const DeviceIdentifier& identifier) const {
         std::lock_guard<std::recursive_mutex> lock(_mutex);
         const auto* device = FindLocked(identifier);
         return device != nullptr ? device->Availability : RemoteDeviceAvailability::Unknown;
     }
 
+    /// <summary>Gets the number of currently retained remote-device records.</summary>
     std::size_t GetDeviceCount() const {
         std::lock_guard<std::recursive_mutex> lock(_mutex);
         std::size_t count = 0;
@@ -300,6 +329,8 @@ public:
         return count;
     }
 
+    /// <summary>Invokes a callback for a stable snapshot of each known remote device.</summary>
+    /// <typeparam name="TCallback">Callable accepting a <c>RemoteDeviceSnapshot</c>.</typeparam>
     template<typename TCallback>
     void ForEachDevice(TCallback&& callback) const {
         SnapshotStorage snapshots;

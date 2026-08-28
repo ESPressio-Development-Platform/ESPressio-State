@@ -18,17 +18,16 @@
 namespace ESPressio {
 namespace State {
 
-// Optional symbolic metadata. A State definition may expose:
-//
-//     static constexpr const char* Name = "motor.speed";
-//
-// Names are diagnostic metadata only and never participate in State identity,
-// storage, subscription matching, transport, or ordering.
+/// <summary>Provides optional symbolic metadata for a state definition.</summary>
+/// <typeparam name="TDefinition">State definition being inspected.</typeparam>
+/// <remarks>A definition may expose <c>static constexpr const char* Name</c>. Names are diagnostic metadata only and do not participate in state identity, storage, transport, subscription matching, or ordering.</remarks>
 template<typename TDefinition, typename = void>
 struct StateIntrospectionTraits {
+    /// <summary>Optional human-readable state name, or null when none is declared.</summary>
     static constexpr const char* Name = nullptr;
 };
 
+/// <summary>Introspection specialization for state definitions exposing a symbolic <c>Name</c>.</summary>
 template<typename TDefinition>
 struct StateIntrospectionTraits<
     TDefinition,
@@ -38,24 +37,36 @@ struct StateIntrospectionTraits<
         std::is_convertible_v<decltype(TDefinition::Name), const char*>,
         "State definition Name must be convertible to const char*"
     );
+    /// <summary>Human-readable name declared by the state definition.</summary>
     static constexpr const char* Name = TDefinition::Name;
 };
 
+/// <summary>Resolves the optional symbolic name associated with a state definition.</summary>
 template<typename TDefinition>
 inline constexpr const char* StateNameOf =
     StateIntrospectionTraits<TDefinition>::Name;
 
+/// <summary>Combines typed remote-state data with runtime-identifiable state metadata.</summary>
+/// <typeparam name="TDefinition">State definition represented by the snapshot.</typeparam>
 template<typename TDefinition>
 struct RemoteStateIntrospectionSnapshot final {
+    /// <summary>State definition represented by this snapshot.</summary>
     using Definition = TDefinition;
+    /// <summary>Value type represented by the state definition.</summary>
     using Value = StateValueType<TDefinition>;
 
+    /// <summary>Remote device owning the state.</summary>
     DeviceIdentifier Device{};
+    /// <summary>Stable state type identifier.</summary>
     StateTypeId TypeId = StateTypeIdOf<TDefinition>;
+    /// <summary>Optional symbolic state name.</summary>
     const char* Name = StateNameOf<TDefinition>;
+    /// <summary>Typed remote-state snapshot.</summary>
     RemoteStateSnapshot<Value> State{};
 };
 
+/// <summary>Provides runtime lookup and iteration across the typed definitions in a state contract.</summary>
+/// <typeparam name="TContract">State contract whose definitions are exposed for introspection.</typeparam>
 template<typename TContract>
 class StateIntrospection final {
 private:
@@ -134,6 +145,7 @@ private:
     }
 
 public:
+    /// <summary>Attempts to resolve a runtime state type identifier to its optional symbolic name.</summary>
     static bool TryGetName(
         StateTypeId typeId,
         const char*& name
@@ -145,6 +157,7 @@ public:
         }) && name != nullptr;
     }
 
+    /// <summary>Attempts to resolve a symbolic state name to its stable type identifier.</summary>
     static bool TryGetTypeId(
         const char* name,
         StateTypeId& typeId
@@ -153,6 +166,9 @@ public:
         return FindTypeIdByName(name, typeId);
     }
 
+    /// <summary>Visits the strongly typed state definition corresponding to a runtime type identifier.</summary>
+    /// <typeparam name="TCallback">Callable accepting a typed <c>StateTag</c>.</typeparam>
+    /// <returns><c>true</c> when the type identifier belongs to the contract.</returns>
     template<typename TCallback>
     static bool Visit(
         StateTypeId typeId,
@@ -161,6 +177,7 @@ public:
         return VisitType(typeId, std::forward<TCallback>(callback));
     }
 
+    /// <summary>Reads one typed remote state and enriches it with introspection metadata.</summary>
     template<typename TDefinition, std::size_t TMaximumDevices>
     static bool Read(
         const RemoteStateManager<TContract, TMaximumDevices>& manager,
@@ -180,6 +197,7 @@ public:
         return true;
     }
 
+    /// <summary>Visits each state with a retained value for one remote device.</summary>
     template<std::size_t TMaximumDevices, typename TCallback>
     static void ForEachState(
         const RemoteStateManager<TContract, TMaximumDevices>& manager,
@@ -190,6 +208,7 @@ public:
         VisitDeviceStates(manager, device, visitor);
     }
 
+    /// <summary>Visits each retained state value across all known remote devices.</summary>
     template<std::size_t TMaximumDevices, typename TCallback>
     static void ForEachRemoteState(
         const RemoteStateManager<TContract, TMaximumDevices>& manager,

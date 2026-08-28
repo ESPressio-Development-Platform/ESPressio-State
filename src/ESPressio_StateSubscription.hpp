@@ -14,35 +14,50 @@
 namespace ESPressio {
 namespace State {
 
+/// <summary>Specifies whether a state subscription applies to every remote device or one specific device.</summary>
 enum class StateSubscriptionScope : uint8_t {
     AnyDevice = 0,
     SpecificDevice
 };
 
+/// <summary>Describes a typed subscription to state updates from any or one specific remote device.</summary>
+/// <typeparam name="TDefinition">State definition being subscribed to.</typeparam>
 template<typename TDefinition>
 struct StateSubscription final {
+    /// <summary>Stable type identifier of the subscribed state definition.</summary>
     static constexpr StateTypeId TypeId = StateTypeIdOf<TDefinition>;
+    /// <summary>Device scope applied to the subscription.</summary>
     StateSubscriptionScope Scope = StateSubscriptionScope::AnyDevice;
+    /// <summary>Specific device when <c>Scope</c> is <c>SpecificDevice</c>.</summary>
     DeviceIdentifier Device{};
 
+    /// <summary>Creates a subscription accepting the state from any remote device.</summary>
     static constexpr StateSubscription Any() { return StateSubscription{}; }
+    /// <summary>Creates a subscription restricted to one remote device.</summary>
     static constexpr StateSubscription From(const DeviceIdentifier& device) {
         StateSubscription result;
         result.Scope = StateSubscriptionScope::SpecificDevice;
         result.Device = device;
         return result;
     }
+    /// <summary>Determines whether a remote device matches this subscription's scope.</summary>
     bool Matches(const DeviceIdentifier& device) const noexcept {
         return Scope == StateSubscriptionScope::AnyDevice || Device == device;
     }
 };
 
+/// <summary>Maintains a fixed-capacity registry of local remote-state subscription interests.</summary>
+/// <typeparam name="TCapacity">Maximum number of retained subscription descriptors.</typeparam>
 template<std::size_t TCapacity>
 class StateSubscriptionRegistry final {
 public:
+    /// <summary>Runtime description of one registered state subscription.</summary>
     struct Descriptor {
+        /// <summary>Stable state type identifier.</summary>
         StateTypeId TypeId = 0;
+        /// <summary>Device scope associated with the subscription.</summary>
         StateSubscriptionScope Scope = StateSubscriptionScope::AnyDevice;
+        /// <summary>Specific device when the scope is device-specific.</summary>
         DeviceIdentifier Device{};
     };
 
@@ -82,16 +97,22 @@ private:
     std::shared_ptr<RegistryObservable> _observable = std::make_shared<RegistryObservable>();
 
 public:
+    /// <summary>Maximum number of subscriptions retained by this registry.</summary>
     static constexpr std::size_t Capacity = TCapacity;
 
+    /// <summary>Registers an observer for subscription-registry lifecycle events.</summary>
     Observable::ObserverHandlePtr RegisterObserver(IStateSubscriptionRegistryObserver* observer) {
         return _observable->template RegisterObserverAs<IStateSubscriptionRegistryObserver>(observer);
     }
 
+    /// <summary>Unregisters a subscription-registry observer.</summary>
     void UnregisterObserver(IStateSubscriptionRegistryObserver* observer) {
         _observable->UnregisterObserver(observer);
     }
 
+    /// <summary>Adds a typed state subscription when it is not already present and capacity permits.</summary>
+    /// <typeparam name="TDefinition">State definition to subscribe to.</typeparam>
+    /// <returns><c>true</c> when the subscription is present after the call.</returns>
     template<typename TDefinition>
     bool Subscribe(const StateSubscription<TDefinition>& subscription = StateSubscription<TDefinition>::Any()) {
         const Descriptor descriptor{StateTypeIdOf<TDefinition>, subscription.Scope, subscription.Device};
@@ -129,6 +150,8 @@ public:
         return false;
     }
 
+    /// <summary>Removes a typed state subscription when present.</summary>
+    /// <typeparam name="TDefinition">State definition to unsubscribe from.</typeparam>
     template<typename TDefinition>
     bool Unsubscribe(const StateSubscription<TDefinition>& subscription = StateSubscription<TDefinition>::Any()) {
         const Descriptor descriptor{StateTypeIdOf<TDefinition>, subscription.Scope, subscription.Device};
@@ -150,6 +173,7 @@ public:
         return removed;
     }
 
+    /// <summary>Determines whether the specified state type is subscribed for a remote device.</summary>
     bool IsSubscribed(const DeviceIdentifier& device, StateTypeId typeId) const {
         std::lock_guard<std::mutex> lock(_mutex);
         for (const auto& record : _records) {
@@ -159,11 +183,13 @@ public:
         return false;
     }
 
+    /// <summary>Determines whether a typed state definition is subscribed for a remote device.</summary>
     template<typename TDefinition>
     bool IsSubscribed(const DeviceIdentifier& device) const {
         return IsSubscribed(device, StateTypeIdOf<TDefinition>);
     }
 
+    /// <summary>Gets the number of active subscriptions.</summary>
     std::size_t Count() const {
         std::lock_guard<std::mutex> lock(_mutex);
         std::size_t count = 0;
@@ -171,6 +197,7 @@ public:
         return count;
     }
 
+    /// <summary>Invokes a callback for a stable snapshot of each active subscription descriptor.</summary>
     template<typename TCallback>
     void ForEach(TCallback&& callback) const {
         // Descriptor is a small fixed transport/configuration value. Copying only

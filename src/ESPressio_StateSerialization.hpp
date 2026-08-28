@@ -22,21 +22,34 @@
 namespace ESPressio {
 namespace State {
 
+/// <summary>Serialized representation of one typed remote-state snapshot.</summary>
+/// <typeparam name="TDefinition">State definition whose value is represented.</typeparam>
 template<typename TDefinition>
 struct SerializedRemoteState final {
+    /// <summary>Maximum encoded payload size for the state definition.</summary>
     static constexpr std::size_t MaximumPayloadSize =
         StateCodec<TDefinition>::MaximumEncodedSize;
 
+    /// <summary>Device that owns the remote state.</summary>
     DeviceIdentifier Device{};
+    /// <summary>Stable identifier of the serialized state type.</summary>
     StateTypeId TypeId = StateTypeIdOf<TDefinition>;
+    /// <summary>Human-readable state name supplied by state introspection.</summary>
     const char* Name = StateNameOf<TDefinition>;
+    /// <summary>Remote state epoch associated with the serialized value.</summary>
     StateEpoch Epoch = 0;
+    /// <summary>Remote state revision associated with the serialized value.</summary>
     StateRevision Revision = 0;
+    /// <summary>Known availability of the remote device when the snapshot was captured.</summary>
     RemoteDeviceAvailability Availability = RemoteDeviceAvailability::Unknown;
+    /// <summary>Encoded state payload storage.</summary>
     std::array<uint8_t, MaximumPayloadSize> Payload{};
+    /// <summary>Number of valid bytes currently stored in <c>Payload</c>.</summary>
     std::size_t PayloadSize = 0;
 };
 
+/// <summary>Serializes typed remote-state snapshots exposed by a state contract.</summary>
+/// <typeparam name="TContract">State contract describing the supported state definitions.</typeparam>
 template<typename TContract>
 class StateSerialization final {
 private:
@@ -64,6 +77,13 @@ private:
     }
 
 public:
+    /// <summary>Serializes one typed state value for a remote device.</summary>
+    /// <typeparam name="TDefinition">State definition to serialize.</typeparam>
+    /// <typeparam name="TMaximumDevices">Maximum remote-device capacity of the manager.</typeparam>
+    /// <param name="manager">Remote state manager containing the state snapshot.</param>
+    /// <param name="device">Remote device whose state is required.</param>
+    /// <param name="output">Receives the serialized state record.</param>
+    /// <returns><c>true</c> when a current value exists and is successfully encoded.</returns>
     template<typename TDefinition, std::size_t TMaximumDevices>
     static bool Serialize(
         const RemoteStateManager<TContract, TMaximumDevices>& manager,
@@ -86,6 +106,14 @@ public:
         return EncodeSnapshot(snapshot, output);
     }
 
+    /// <summary>Serializes a remote state selected at runtime by its stable type identifier.</summary>
+    /// <typeparam name="TMaximumDevices">Maximum remote-device capacity of the manager.</typeparam>
+    /// <typeparam name="TCallback">Callback receiving the strongly typed serialized record.</typeparam>
+    /// <param name="manager">Remote state manager containing the state snapshot.</param>
+    /// <param name="device">Remote device whose state is required.</param>
+    /// <param name="typeId">Stable state type identifier to serialize.</param>
+    /// <param name="callback">Callback invoked with the serialized record.</param>
+    /// <returns><c>true</c> when the type is known and a value was serialized.</returns>
     template<std::size_t TMaximumDevices, typename TCallback>
     static bool Serialize(
         const RemoteStateManager<TContract, TMaximumDevices>& manager,
@@ -109,6 +137,9 @@ public:
         return known && serialized;
     }
 
+    /// <summary>Serializes each currently available state value for one remote device.</summary>
+    /// <typeparam name="TMaximumDevices">Maximum remote-device capacity of the manager.</typeparam>
+    /// <typeparam name="TCallback">Callback receiving each strongly typed serialized record.</typeparam>
     template<std::size_t TMaximumDevices, typename TCallback>
     static void ForEachState(
         const RemoteStateManager<TContract, TMaximumDevices>& manager,
@@ -128,6 +159,9 @@ public:
         );
     }
 
+    /// <summary>Serializes each currently available state value across all known remote devices.</summary>
+    /// <typeparam name="TMaximumDevices">Maximum remote-device capacity of the manager.</typeparam>
+    /// <typeparam name="TCallback">Callback receiving each strongly typed serialized record.</typeparam>
     template<std::size_t TMaximumDevices, typename TCallback>
     static void ForEachRemoteState(
         const RemoteStateManager<TContract, TMaximumDevices>& manager,
