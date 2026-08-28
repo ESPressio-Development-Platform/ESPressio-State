@@ -4,12 +4,14 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <tuple>
 #include <utility>
 
 #include <ESPressio_ThreadSafeObservable.hpp>
 
 #include "ESPressio_DeviceIdentifier.hpp"
+#include "ESPressio_StateComparison.hpp"
 #include "ESPressio_StateContract.hpp"
 #include "ESPressio_StateObservers.hpp"
 #include "ESPressio_StateTransport.hpp"
@@ -17,13 +19,15 @@
 namespace ESPressio {
 namespace State {
 
-/// <summary>Stores the callable source and current revision for one typed published state.</summary>
+/// <summary>Stores the callable source, last meaningfully published value, and current revision for one typed published state.</summary>
 template<typename TDefinition>
 struct StateSourceSlot {
     /// <summary>Value type represented by the state definition.</summary>
     using Value = StateValueType<TDefinition>;
     /// <summary>Callable used to obtain the current state value.</summary>
     std::function<Value()> Source;
+    /// <summary>Latest value that passed the state definition's semantic comparison policy and was actually published.</summary>
+    std::optional<Value> LastPublished;
     /// <summary>Latest publication revision allocated for this state.</summary>
     StateRevision Revision = 0;
 };
@@ -59,6 +63,7 @@ struct StatePublisherContractObserverRegistrar<StateContract<TDefinitions...>> {
 
 /// <summary>Publishes typed local state values with epoch/revision metadata for a fixed state contract.</summary>
 /// <typeparam name="TContract">State contract defining values that may be published.</typeparam>
+/// <remarks>Only semantic changes advance revisions or notify observers. Equality is determined by <c>StateComparison&lt;TDefinition&gt;</c>, allowing each definition to apply exact equality, deadband, hysteresis, or other meaningful-change policy.</remarks>
 template<typename TContract>
 class StatePublisher final {
     class PublisherObservable final : public Observable::ThreadSafeObservable {
@@ -150,6 +155,22 @@ class StatePublisher final {
         return update;
     }
 
+    template<typename TDefinition>
+    bool IsMeaningfulChangeLocked(
+        const StateValueType<TDefinition>& value
+    ) const {
+        const auto& source = SourceSlot<TDefinition>();
+        return !source.LastPublished.has_value() ||
+            StateValueChanged<TDefinition>(*source.LastPublished, value);
+    }
+
+    template<typename TDefinition>
+    void RememberPublishedLocked(
+        const StateValueType<TDefinition>& value
+    ) {
+        SourceSlot<TDefinition>().LastPublished = value;
+    }
+
 public:
     /// <summary>Creates a state publisher for the supplied origin and non-zero epoch.</summary>
     explicit StatePublisher(
@@ -205,7 +226,12 @@ public:
         if (!source) return false;
         {
             std::lock_guard<std::recursive_mutex> lock(_mutex);
-            SourceSlot<TDefinition>().Source = std::move(source);
+            auto& slot = SourceSlot<TDefinition>();
+            slot.Source = std::move(source);
+            // A newly registered source must be allowed to establish a fresh
+            // baseline even when it initially returns the same value as the
+            // source that previously occupied this slot.
+            slot.LastPublished.reset();
         }
         _observable->SourceRegistered(StateTypeIdOf<TDefinition>);
         return true;
@@ -220,6 +246,7 @@ public:
             auto& source = SourceSlot<TDefinition>();
             hadSource = static_cast<bool>(source.Source);
             source.Source = {};
+            source.LastPublished.reset();
         }
         if (hadSource) {
             _observable->SourceUnregistered(StateTypeIdOf<TDefinition>);
@@ -234,10 +261,12 @@ public:
         return static_cast<bool>(SourceSlot<TDefinition>().Source);
     }
 
-    /// <summary>Reads the registered source, advances its revision, and publishes the resulting typed update.</summary>
+    /// <summary>Reads the registered source and publishes it only when it represents a meaningful change.</summary>
+    /// <returns>True when a source exists. A semantically unchanged value is treated as a successful no-op and does not advance the revision or notify observers.</returns>
     template<typename TDefinition>
     bool Publish() {
         StateUpdate<StateValueType<TDefinition>> update;
+        bool changed = false;
         {
             // Source callbacks are expected to be small local State getters.
             // Holding the recursive lock avoids copying std::function (which can
@@ -247,33 +276,49 @@ public:
             auto& source = SourceSlot<TDefinition>();
             if (!source.Source) return false;
             auto value = source.Source();
-            update = MakeUpdateLocked<TDefinition>(std::move(value), true);
+            changed = IsMeaningfulChangeLocked<TDefinition>(value);
+            if (changed) {
+                RememberPublishedLocked<TDefinition>(value);
+                update = MakeUpdateLocked<TDefinition>(std::move(value), true);
+            }
         }
-        _observable->template Published<TDefinition>(update);
+        if (changed) _observable->template Published<TDefinition>(update);
         return true;
     }
 
-    /// <summary>Copies a supplied typed value into a new publication and advances its revision.</summary>
+    /// <summary>Copies and publishes a supplied typed value only when it represents a meaningful change.</summary>
+    /// <returns>True for both a published change and a semantically unchanged successful no-op.</returns>
     template<typename TDefinition>
     bool Publish(const StateValueType<TDefinition>& value) {
         StateUpdate<StateValueType<TDefinition>> update;
+        bool changed = false;
         {
             std::lock_guard<std::recursive_mutex> lock(_mutex);
-            update = MakeUpdateLocked<TDefinition>(value, true);
+            changed = IsMeaningfulChangeLocked<TDefinition>(value);
+            if (changed) {
+                RememberPublishedLocked<TDefinition>(value);
+                update = MakeUpdateLocked<TDefinition>(value, true);
+            }
         }
-        _observable->template Published<TDefinition>(update);
+        if (changed) _observable->template Published<TDefinition>(update);
         return true;
     }
 
-    /// <summary>Moves a supplied typed value into a new publication and advances its revision.</summary>
+    /// <summary>Moves and publishes a supplied typed value only when it represents a meaningful change.</summary>
+    /// <returns>True for both a published change and a semantically unchanged successful no-op.</returns>
     template<typename TDefinition>
     bool Publish(StateValueType<TDefinition>&& value) {
         StateUpdate<StateValueType<TDefinition>> update;
+        bool changed = false;
         {
             std::lock_guard<std::recursive_mutex> lock(_mutex);
-            update = MakeUpdateLocked<TDefinition>(std::move(value), true);
+            changed = IsMeaningfulChangeLocked<TDefinition>(value);
+            if (changed) {
+                RememberPublishedLocked<TDefinition>(value);
+                update = MakeUpdateLocked<TDefinition>(std::move(value), true);
+            }
         }
-        _observable->template Published<TDefinition>(update);
+        if (changed) _observable->template Published<TDefinition>(update);
         return true;
     }
 
