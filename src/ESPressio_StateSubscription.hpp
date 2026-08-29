@@ -1,10 +1,10 @@
 #pragma once
 
-#include <array>
 #include <cstddef>
 #include <memory>
 #include <mutex>
 
+#include <ESPressio_Memory.hpp>
 #include <ESPressio_ThreadSafeObservable.hpp>
 
 #include "ESPressio_DeviceIdentifier.hpp"
@@ -46,8 +46,9 @@ struct StateSubscription final {
     }
 };
 
-/// <summary>Maintains a fixed-capacity registry of local remote-state subscription interests.</summary>
+/// <summary>Maintains a bounded registry of local remote-state subscription interests.</summary>
 /// <typeparam name="TCapacity">Maximum number of retained subscription descriptors.</typeparam>
+/// <remarks>Construction is allocation-free. Bounded record storage and callback snapshots prefer external memory and are materialized only when registry operations require them. Optional observer infrastructure is allocated only when an observer is registered.</remarks>
 template<std::size_t TCapacity>
 class StateSubscriptionRegistry final {
 public:
@@ -62,6 +63,9 @@ public:
     };
 
 private:
+    static constexpr auto ExternalPreferred =
+        System::Memory::MemoryPolicy::ExternalPreferred;
+
     class RegistryObservable final : public Observable::ThreadSafeObservable {
     public:
         void Subscribed(StateTypeId typeId, StateSubscriptionScope scope, const DeviceIdentifier& device) {
@@ -92,22 +96,50 @@ private:
         Descriptor Subscription{};
     };
 
-    std::array<Record, TCapacity> _records{};
+    using RecordStorage = System::Memory::Vector<Record, ExternalPreferred>;
+    using SnapshotStorage = System::Memory::Vector<Descriptor, ExternalPreferred>;
+
+    mutable RecordStorage _records;
     mutable std::mutex _mutex;
-    std::shared_ptr<RegistryObservable> _observable = std::make_shared<RegistryObservable>();
+    std::shared_ptr<RegistryObservable> _observable;
+
+    bool EnsureRecords() const {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (_records.size() == TCapacity) return true;
+        try {
+            _records.assign(TCapacity, Record{});
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    bool EnsureObservable() {
+        if (_observable) return true;
+        try {
+            _observable = System::Memory::MakeShared<
+                RegistryObservable,
+                ExternalPreferred
+            >();
+            return static_cast<bool>(_observable);
+        } catch (...) {
+            return false;
+        }
+    }
 
 public:
     /// <summary>Maximum number of subscriptions retained by this registry.</summary>
     static constexpr std::size_t Capacity = TCapacity;
 
-    /// <summary>Registers an observer for subscription-registry lifecycle events.</summary>
+    /// <summary>Registers an observer for subscription-registry lifecycle events, allocating observer infrastructure on demand.</summary>
     Observable::ObserverHandlePtr RegisterObserver(IStateSubscriptionRegistryObserver* observer) {
+        if (!EnsureObservable()) return {};
         return _observable->template RegisterObserverAs<IStateSubscriptionRegistryObserver>(observer);
     }
 
     /// <summary>Unregisters a subscription-registry observer.</summary>
     void UnregisterObserver(IStateSubscriptionRegistryObserver* observer) {
-        _observable->UnregisterObserver(observer);
+        if (_observable) _observable->UnregisterObserver(observer);
     }
 
     /// <summary>Adds a typed state subscription when it is not already present and capacity permits.</summary>
@@ -115,6 +147,7 @@ public:
     /// <returns><c>true</c> when the subscription is present after the call.</returns>
     template<typename TDefinition>
     bool Subscribe(const StateSubscription<TDefinition>& subscription = StateSubscription<TDefinition>::Any()) {
+        if (!EnsureRecords()) return false;
         const Descriptor descriptor{StateTypeIdOf<TDefinition>, subscription.Scope, subscription.Device};
         bool added = false;
         bool capacityExhausted = false;
@@ -141,10 +174,12 @@ public:
         // (for example when a Subscribe immediately produces an initial State
         // snapshot). Never execute that code while the registry mutex is held.
         if (added) {
-            _observable->Subscribed(descriptor.TypeId, descriptor.Scope, descriptor.Device);
+            if (_observable) {
+                _observable->Subscribed(descriptor.TypeId, descriptor.Scope, descriptor.Device);
+            }
             return true;
         }
-        if (capacityExhausted) {
+        if (capacityExhausted && _observable) {
             _observable->CapacityExhausted(descriptor.TypeId, descriptor.Scope, descriptor.Device);
         }
         return false;
@@ -154,6 +189,7 @@ public:
     /// <typeparam name="TDefinition">State definition to unsubscribe from.</typeparam>
     template<typename TDefinition>
     bool Unsubscribe(const StateSubscription<TDefinition>& subscription = StateSubscription<TDefinition>::Any()) {
+        if (!EnsureRecords()) return false;
         const Descriptor descriptor{StateTypeIdOf<TDefinition>, subscription.Scope, subscription.Device};
         bool removed = false;
         {
@@ -167,7 +203,7 @@ public:
                 }
             }
         }
-        if (removed) {
+        if (removed && _observable) {
             _observable->Unsubscribed(descriptor.TypeId, descriptor.Scope, descriptor.Device);
         }
         return removed;
@@ -175,6 +211,7 @@ public:
 
     /// <summary>Determines whether the specified state type is subscribed for a remote device.</summary>
     bool IsSubscribed(const DeviceIdentifier& device, StateTypeId typeId) const {
+        if (!EnsureRecords()) return false;
         std::lock_guard<std::mutex> lock(_mutex);
         for (const auto& record : _records) {
             if (record.Used && record.Subscription.TypeId == typeId &&
@@ -191,27 +228,30 @@ public:
 
     /// <summary>Gets the number of active subscriptions.</summary>
     std::size_t Count() const {
+        if (!EnsureRecords()) return 0;
         std::lock_guard<std::mutex> lock(_mutex);
         std::size_t count = 0;
         for (const auto& record : _records) if (record.Used) ++count;
         return count;
     }
 
-    /// <summary>Invokes a callback for a stable snapshot of each active subscription descriptor.</summary>
+    /// <summary>Invokes a callback for a stable externally backed snapshot of each active subscription descriptor.</summary>
     template<typename TCallback>
     void ForEach(TCallback&& callback) const {
-        // Descriptor is a small fixed transport/configuration value. Copying only
-        // active descriptors here intentionally preserves a lock-free callback
-        // phase and avoids exposing mutable registry storage across re-entrant code.
-        std::array<Descriptor, TCapacity> snapshot{};
-        std::size_t count = 0;
+        if (!EnsureRecords()) return;
+        SnapshotStorage snapshot;
+        try {
+            snapshot.reserve(TCapacity);
+        } catch (...) {
+            return;
+        }
         {
             std::lock_guard<std::mutex> lock(_mutex);
             for (const auto& record : _records) {
-                if (record.Used) snapshot[count++] = record.Subscription;
+                if (record.Used) snapshot.push_back(record.Subscription);
             }
         }
-        for (std::size_t index = 0; index < count; ++index) callback(snapshot[index]);
+        for (const auto& descriptor : snapshot) callback(descriptor);
     }
 };
 
