@@ -4,13 +4,14 @@
 #error "RemoteStateObserverThread requires ESPressio Threads. Include the Threads working branch when using this optional execution layer."
 #endif
 
-#include <array>
+#include <algorithm>
 #include <cstddef>
 #include <memory>
 #include <mutex>
 #include <tuple>
 #include <utility>
 
+#include <ESPressio_Memory.hpp>
 #include <ESPressio_PrecisionThread.hpp>
 #include <ESPressio_PrecisionThreadTraits.hpp>
 #include <ESPressio_ThreadSafeObservable.hpp>
@@ -54,6 +55,8 @@ public:
 private:
     static constexpr std::size_t MaximumDirtyStates =
         TMaximumDevices * TContract::StateCount;
+    static constexpr auto ExternalPreferred =
+        System::Memory::MemoryPolicy::ExternalPreferred;
 
     struct DirtyState {
         bool Used = false;
@@ -73,6 +76,10 @@ private:
         DeviceIdentifier Device{};
         typename RemoteStateTuple<TContract>::Type States{};
     };
+
+    using DirtyStateStorage = System::Memory::Vector<DirtyState, ExternalPreferred>;
+    using DirtyAvailabilityStorage = System::Memory::Vector<DirtyAvailability, ExternalPreferred>;
+    using DeliveredStorage = System::Memory::Vector<DeliveredDevice, ExternalPreferred>;
 
     class DispatchObservable final : public Observable::ThreadSafeObservable {
     public:
@@ -126,18 +133,17 @@ private:
     Manager& _manager;
     Observable::ObserverHandlePtr _managerHandle;
 
-    // Double-buffered dirty sets. Producers always write to the active sets.
-    // Drain swaps active and processing sets under the mutex, then performs all
-    // notifications from member-owned storage. This avoids copying the complete
-    // dirty arrays onto the PrecisionThread stack on every wake/iteration.
-    std::array<DirtyState, MaximumDirtyStates> _dirtyStates{};
-    std::array<DirtyState, MaximumDirtyStates> _processingStates{};
-    std::array<DirtyAvailability, TMaximumDevices> _dirtyAvailability{};
-    std::array<DirtyAvailability, TMaximumDevices> _processingAvailability{};
+    // Double-buffered dirty sets are fixed-size after construction. Their
+    // backing storage is external-preferred so bounded observer bookkeeping
+    // does not permanently consume scarce internal DRAM, while drains remain
+    // allocation-free after construction.
+    DirtyStateStorage _dirtyStates;
+    DirtyStateStorage _processingStates;
+    DirtyAvailabilityStorage _dirtyAvailability;
+    DirtyAvailabilityStorage _processingAvailability;
+    DeliveredStorage _delivered;
 
-    std::array<DeliveredDevice, TMaximumDevices> _delivered{};
-    std::shared_ptr<DispatchObservable> _observable =
-        std::make_shared<DispatchObservable>();
+    std::shared_ptr<DispatchObservable> _observable;
     std::mutex _dirtyMutex;
     bool _prepared = false;
 
@@ -272,7 +278,14 @@ protected:
 public:
     /// <summary>Creates an observer thread bound to the supplied remote-state manager.</summary>
     explicit RemoteStateObserverThread(Manager& manager)
-        : Base(), _manager(manager) {
+        : Base(),
+          _manager(manager),
+          _dirtyStates(MaximumDirtyStates),
+          _processingStates(MaximumDirtyStates),
+          _dirtyAvailability(TMaximumDevices),
+          _processingAvailability(TMaximumDevices),
+          _delivered(TMaximumDevices),
+          _observable(System::Memory::MakeShared<DispatchObservable, ExternalPreferred>()) {
         this->SetStartOnInitialize(false);
         this->SetStackSize(ESPRESSIO_STATE_OBSERVER_THREAD_STACK_SIZE);
         this->SetPriority(ESPRESSIO_STATE_OBSERVER_THREAD_PRIORITY);
@@ -296,12 +309,12 @@ public:
         _prepared = false;
         {
             std::lock_guard<std::mutex> lock(_dirtyMutex);
-            _dirtyStates = {};
-            _processingStates = {};
-            _dirtyAvailability = {};
-            _processingAvailability = {};
+            std::fill(_dirtyStates.begin(), _dirtyStates.end(), DirtyState{});
+            std::fill(_processingStates.begin(), _processingStates.end(), DirtyState{});
+            std::fill(_dirtyAvailability.begin(), _dirtyAvailability.end(), DirtyAvailability{});
+            std::fill(_processingAvailability.begin(), _processingAvailability.end(), DirtyAvailability{});
         }
-        _delivered = {};
+        std::fill(_delivered.begin(), _delivered.end(), DeliveredDevice{});
         this->Shutdown();
     }
 
