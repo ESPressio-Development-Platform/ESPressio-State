@@ -71,6 +71,7 @@ struct RemoteStateTuple<StateContract<TDefinitions...>> {
 /// <summary>Maintains bounded typed state snapshots and availability for remote devices.</summary>
 /// <typeparam name="TContract">State contract accepted by the manager.</typeparam>
 /// <typeparam name="TMaximumDevices">Maximum number of remote devices retained simultaneously.</typeparam>
+/// <remarks>Construction is allocation-free; bounded device storage and observer infrastructure are materialized lazily on first use so globally constructed managers can bind ExternalPreferred storage to the installed platform provider.</remarks>
 template<typename TContract, std::size_t TMaximumDevices>
 class RemoteStateManager final {
 public:
@@ -154,9 +155,28 @@ private:
         System::Memory::MemoryPolicy::ExternalPreferred
     >;
 
-    DeviceStorage _devices;
+    mutable DeviceStorage _devices;
     mutable std::recursive_mutex _mutex;
-    std::shared_ptr<ManagerObservable> _observable;
+    mutable std::shared_ptr<ManagerObservable> _observable;
+
+    /// <summary>Materializes bounded runtime storage using the provider active at first actual use.</summary>
+    bool EnsureRuntimeStorage() const {
+        std::lock_guard<std::recursive_mutex> lock(_mutex);
+        try {
+            if (_devices.size() != TMaximumDevices) {
+                _devices.assign(TMaximumDevices, DeviceRecord{});
+            }
+            if (!_observable) {
+                _observable = System::Memory::MakeShared<
+                    ManagerObservable,
+                    System::Memory::MemoryPolicy::ExternalPreferred
+                >();
+            }
+            return static_cast<bool>(_observable);
+        } catch (...) {
+            return false;
+        }
+    }
 
     DeviceRecord* FindLocked(const DeviceIdentifier& identifier) {
         for (auto& device : _devices) {
@@ -196,6 +216,7 @@ private:
     ) {
         static_assert(TContract::template Contains<TDefinition>,
             "State definition is not part of this StateContract");
+        if (!EnsureRuntimeStorage()) return false;
 
         bool created = false;
         bool changed = false;
@@ -231,21 +252,18 @@ private:
     }
 
 public:
-    /// <summary>Creates an empty bounded remote-state manager.</summary>
-    RemoteStateManager()
-        : _devices(TMaximumDevices),
-          _observable(System::Memory::MakeShared<
-              ManagerObservable,
-              System::Memory::MemoryPolicy::ExternalPreferred
-          >()) {}
+    /// <summary>Creates an empty bounded remote-state manager without allocating its runtime tables.</summary>
+    RemoteStateManager() = default;
 
     /// <summary>Registers an observer for manager-level remote-state and availability events.</summary>
     Observable::ObserverHandlePtr RegisterObserver(IRemoteStateManagerObserver* observer) {
+        if (!EnsureRuntimeStorage()) return {};
         return _observable->template RegisterObserverAs<IRemoteStateManagerObserver>(observer);
     }
 
     /// <summary>Unregisters a previously registered manager observer.</summary>
     void UnregisterObserver(Observable::IObserver* observer) {
+        if (!EnsureRuntimeStorage()) return;
         _observable->UnregisterObserver(observer);
     }
 
@@ -259,6 +277,7 @@ public:
     ) const {
         static_assert(TContract::template Contains<TDefinition>,
             "State definition is not part of this StateContract");
+        if (!EnsureRuntimeStorage()) return false;
         std::lock_guard<std::recursive_mutex> lock(_mutex);
         const auto* device = FindLocked(identifier);
         if (device == nullptr) return false;
@@ -298,6 +317,7 @@ public:
         const DeviceIdentifier& identifier,
         RemoteDeviceAvailability availability
     ) {
+        if (!EnsureRuntimeStorage()) return false;
         bool created = false;
         RemoteDeviceAvailability previous = RemoteDeviceAvailability::Unknown;
         bool changed = false;
@@ -316,6 +336,7 @@ public:
 
     /// <summary>Gets the known availability of a remote device.</summary>
     RemoteDeviceAvailability GetAvailability(const DeviceIdentifier& identifier) const {
+        if (!EnsureRuntimeStorage()) return RemoteDeviceAvailability::Unknown;
         std::lock_guard<std::recursive_mutex> lock(_mutex);
         const auto* device = FindLocked(identifier);
         return device != nullptr ? device->Availability : RemoteDeviceAvailability::Unknown;
@@ -323,16 +344,18 @@ public:
 
     /// <summary>Gets the number of currently retained remote-device records.</summary>
     std::size_t GetDeviceCount() const {
+        if (!EnsureRuntimeStorage()) return 0;
         std::lock_guard<std::recursive_mutex> lock(_mutex);
         std::size_t count = 0;
         for (const auto& device : _devices) if (device.Used) ++count;
         return count;
     }
 
-    /// <summary>Invokes a callback for a stable snapshot of each known remote device.</summary>
+    /// <summary>Invokes a callback for a stable externally backed snapshot of each known remote device.</summary>
     /// <typeparam name="TCallback">Callable accepting a <c>RemoteDeviceSnapshot</c>.</typeparam>
     template<typename TCallback>
     void ForEachDevice(TCallback&& callback) const {
+        if (!EnsureRuntimeStorage()) return;
         SnapshotStorage snapshots;
         snapshots.reserve(TMaximumDevices);
         {
