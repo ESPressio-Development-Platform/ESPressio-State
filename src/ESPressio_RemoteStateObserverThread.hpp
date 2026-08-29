@@ -33,7 +33,7 @@ namespace State {
 /// <summary>Moves remote-state change notifications onto a dedicated precision-thread execution context.</summary>
 /// <typeparam name="TContract">State contract observed by the thread.</typeparam>
 /// <typeparam name="TMaximumDevices">Maximum remote-device capacity of the associated manager.</typeparam>
-/// <remarks>Manager callbacks only mark bounded dirty-state sets and wake the worker; observer callbacks are dispatched later from the thread context.</remarks>
+/// <remarks>Manager callbacks only mark bounded dirty-state sets and wake the worker; observer callbacks are dispatched later from the thread context. Construction is allocation-free; bounded ExternalPreferred bookkeeping is materialized during <c>Prepare()</c> or first observer registration.</remarks>
 template<typename TContract, std::size_t TMaximumDevices>
 class RemoteStateObserverThread final :
     public Threads::PrecisionThread<
@@ -133,10 +133,10 @@ private:
     Manager& _manager;
     Observable::ObserverHandlePtr _managerHandle;
 
-    // Double-buffered dirty sets are fixed-size after construction. Their
-    // backing storage is external-preferred so bounded observer bookkeeping
-    // does not permanently consume scarce internal DRAM, while drains remain
-    // allocation-free after construction.
+    // Double-buffered dirty sets are fixed-size after Prepare(). Their backing
+    // storage is external-preferred so bounded observer bookkeeping does not
+    // permanently consume scarce internal DRAM, while drains remain
+    // allocation-free after preparation.
     DirtyStateStorage _dirtyStates;
     DirtyStateStorage _processingStates;
     DirtyAvailabilityStorage _dirtyAvailability;
@@ -144,8 +144,39 @@ private:
     DeliveredStorage _delivered;
 
     std::shared_ptr<DispatchObservable> _observable;
-    std::mutex _dirtyMutex;
+    mutable std::mutex _dirtyMutex;
     bool _prepared = false;
+
+    /// <summary>Materializes bounded observer bookkeeping with the active System memory provider.</summary>
+    bool EnsureRuntimeStorage() {
+        std::lock_guard<std::mutex> lock(_dirtyMutex);
+        try {
+            if (_dirtyStates.size() != MaximumDirtyStates) {
+                _dirtyStates.assign(MaximumDirtyStates, DirtyState{});
+            }
+            if (_processingStates.size() != MaximumDirtyStates) {
+                _processingStates.assign(MaximumDirtyStates, DirtyState{});
+            }
+            if (_dirtyAvailability.size() != TMaximumDevices) {
+                _dirtyAvailability.assign(TMaximumDevices, DirtyAvailability{});
+            }
+            if (_processingAvailability.size() != TMaximumDevices) {
+                _processingAvailability.assign(TMaximumDevices, DirtyAvailability{});
+            }
+            if (_delivered.size() != TMaximumDevices) {
+                _delivered.assign(TMaximumDevices, DeliveredDevice{});
+            }
+            if (!_observable) {
+                _observable = System::Memory::MakeShared<
+                    DispatchObservable,
+                    ExternalPreferred
+                >();
+            }
+            return static_cast<bool>(_observable);
+        } catch (...) {
+            return false;
+        }
+    }
 
     DeliveredDevice* FindOrCreateDelivered(const DeviceIdentifier& device) {
         for (auto& record : _delivered) {
@@ -246,6 +277,7 @@ private:
     }
 
     void Drain() {
+        if (!_observable) return;
         {
             std::lock_guard<std::mutex> lock(_dirtyMutex);
             _processingStates.swap(_dirtyStates);
@@ -276,26 +308,20 @@ protected:
     void Iterate(Time, Time, Threads::SkippedIterationCount) override { Drain(); }
 
 public:
-    /// <summary>Creates an observer thread bound to the supplied remote-state manager.</summary>
+    /// <summary>Creates an allocation-free observer thread bound to the supplied remote-state manager.</summary>
     explicit RemoteStateObserverThread(Manager& manager)
-        : Base(),
-          _manager(manager),
-          _dirtyStates(MaximumDirtyStates),
-          _processingStates(MaximumDirtyStates),
-          _dirtyAvailability(TMaximumDevices),
-          _processingAvailability(TMaximumDevices),
-          _delivered(TMaximumDevices),
-          _observable(System::Memory::MakeShared<DispatchObservable, ExternalPreferred>()) {
+        : Base(), _manager(manager) {
         this->SetStartOnInitialize(false);
         this->SetStackSize(ESPRESSIO_STATE_OBSERVER_THREAD_STACK_SIZE);
         this->SetPriority(ESPRESSIO_STATE_OBSERVER_THREAD_PRIORITY);
         this->SetIterationPeriod(Units::MilliSeconds<uint32_t>(1000));
     }
 
-    /// <summary>Registers the thread with its remote-state manager before the worker is started.</summary>
-    /// <returns><c>true</c> when the manager observer registration is active.</returns>
+    /// <summary>Materializes bounded bookkeeping and registers the thread with its remote-state manager before the worker is started.</summary>
+    /// <returns><c>true</c> when storage and manager observer registration are active.</returns>
     bool Prepare() {
         if (_prepared) return true;
+        if (!EnsureRuntimeStorage()) return false;
         _managerHandle = _manager.RegisterObserver(
             static_cast<IRemoteStateManagerObserver*>(this)
         );
@@ -313,8 +339,8 @@ public:
             std::fill(_processingStates.begin(), _processingStates.end(), DirtyState{});
             std::fill(_dirtyAvailability.begin(), _dirtyAvailability.end(), DirtyAvailability{});
             std::fill(_processingAvailability.begin(), _processingAvailability.end(), DirtyAvailability{});
+            std::fill(_delivered.begin(), _delivered.end(), DeliveredDevice{});
         }
-        std::fill(_delivered.begin(), _delivered.end(), DeliveredDevice{});
         this->Shutdown();
     }
 
@@ -330,6 +356,7 @@ public:
             TContract::template Contains<TDefinition>,
             "State definition is not part of this StateContract"
         );
+        if (!EnsureRuntimeStorage()) return {};
         return _observable->template RegisterObserverAs<
             IRemoteStateObserver<TDefinition>
         >(observer);
@@ -339,6 +366,7 @@ public:
     Observable::ObserverHandlePtr RegisterAvailabilityObserver(
         IRemoteDeviceAvailabilityObserver* observer
     ) {
+        if (!EnsureRuntimeStorage()) return {};
         return _observable->template RegisterObserverAs<
             IRemoteDeviceAvailabilityObserver
         >(observer);
@@ -346,7 +374,7 @@ public:
 
     /// <summary>Unregisters a previously registered dispatch observer.</summary>
     void UnregisterObserver(Observable::IObserver* observer) {
-        _observable->UnregisterObserver(observer);
+        if (_observable) _observable->UnregisterObserver(observer);
     }
 
     /// <summary>Marks a meaningfully changed accepted state for deferred thread-context delivery.</summary>
@@ -357,7 +385,7 @@ public:
         StateRevision,
         bool changed
     ) override {
-        if (!changed) return;
+        if (!changed || !_prepared) return;
         MarkStateDirty(device, typeId);
         this->WakeForWork();
     }
@@ -368,6 +396,7 @@ public:
         RemoteDeviceAvailability previous,
         RemoteDeviceAvailability current
     ) override {
+        if (!_prepared) return;
         MarkAvailabilityDirty(device, previous, current);
         MarkAllStatesDirty(device);
         this->WakeForWork();
