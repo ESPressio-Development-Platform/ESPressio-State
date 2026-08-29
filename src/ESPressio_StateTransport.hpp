@@ -6,6 +6,7 @@
 #include <memory>
 #include <utility>
 
+#include <ESPressio_Memory.hpp>
 #include <ESPressio_ThreadSafeObservable.hpp>
 
 #include "ESPressio_DeviceIdentifier.hpp"
@@ -117,6 +118,7 @@ public:
 
 /// <summary>Tracks publication and acknowledgement lifecycle for one typed state and destination device.</summary>
 /// <typeparam name="TDefinition">State definition being published.</typeparam>
+/// <remarks>Observer infrastructure is optional and allocation-free unless a lifecycle observer is actually registered.</remarks>
 template<typename TDefinition>
 class StatePublicationTracker final {
 public:
@@ -209,8 +211,20 @@ private:
 
     DeviceIdentifier _destination{};
     PendingStateUpdate<Value> _pending{};
-    std::shared_ptr<PublicationObservable> _observable =
-        std::make_shared<PublicationObservable>();
+    std::shared_ptr<PublicationObservable> _observable;
+
+    bool EnsureObservable() {
+        if (_observable) return true;
+        try {
+            _observable = System::Memory::MakeShared<
+                PublicationObservable,
+                System::Memory::MemoryPolicy::ExternalPreferred
+            >();
+            return static_cast<bool>(_observable);
+        } catch (...) {
+            return false;
+        }
+    }
 
     template<typename TValueArgument>
     bool ReplaceValue(
@@ -232,6 +246,11 @@ private:
             return false;
         }
 
+        // The tracker has no mandatory side-channel work. If no lifecycle
+        // observer was ever registered, avoid creating notification
+        // infrastructure merely to discover that there is nobody to notify.
+        if (!_observable) return true;
+
         if (hadPending) {
             _observable->Superseded(
                 _destination,
@@ -247,15 +266,16 @@ private:
     }
 
 public:
-    /// <summary>Creates a publication tracker for an optional destination device.</summary>
+    /// <summary>Creates an allocation-free publication tracker for an optional destination device.</summary>
     explicit StatePublicationTracker(
         const DeviceIdentifier& destination = DeviceIdentifier{}
     ) : _destination(destination) {}
 
-    /// <summary>Registers an observer for publication lifecycle notifications.</summary>
+    /// <summary>Registers an observer for publication lifecycle notifications, materializing ExternalPreferred observer storage on demand.</summary>
     Observable::ObserverHandlePtr RegisterObserver(
         IStatePublicationObserver* observer
     ) {
+        if (!EnsureObservable()) return {};
         return _observable->template RegisterObserverAs<
             IStatePublicationObserver
         >(observer);
@@ -263,7 +283,7 @@ public:
 
     /// <summary>Unregisters a publication lifecycle observer.</summary>
     void UnregisterObserver(IStatePublicationObserver* observer) {
-        _observable->UnregisterObserver(observer);
+        if (_observable) _observable->UnregisterObserver(observer);
     }
 
     /// <summary>Gets the destination associated with this tracker.</summary>
@@ -299,7 +319,7 @@ public:
         return ReplaceValue(epoch, revision, std::move(value));
     }
 
-    /// <summary>Processes an acknowledgement and emits current or stale acknowledgement notifications.</summary>
+    /// <summary>Processes an acknowledgement and emits current or stale acknowledgement notifications only when observers exist.</summary>
     bool Acknowledge(StateEpoch epoch, StateRevision revision) {
         const bool current =
             _pending.Pending &&
@@ -307,6 +327,8 @@ public:
             revision >= _pending.Revision;
 
         const bool accepted = _pending.Acknowledge(epoch, revision);
+        if (!_observable) return accepted;
+
         if (!accepted || !current) {
             _observable->StaleAcknowledgement(
                 _destination,
