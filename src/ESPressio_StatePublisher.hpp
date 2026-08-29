@@ -8,6 +8,7 @@
 #include <tuple>
 #include <utility>
 
+#include <ESPressio_Memory.hpp>
 #include <ESPressio_ThreadSafeObservable.hpp>
 
 #include "ESPressio_DeviceIdentifier.hpp"
@@ -63,7 +64,7 @@ struct StatePublisherContractObserverRegistrar<StateContract<TDefinitions...>> {
 
 /// <summary>Publishes typed local state values with epoch/revision metadata for a fixed state contract.</summary>
 /// <typeparam name="TContract">State contract defining values that may be published.</typeparam>
-/// <remarks>Only semantic changes advance revisions or notify observers. Equality is determined by <c>StateComparison&lt;TDefinition&gt;</c>, allowing each definition to apply exact equality, deadband, hysteresis, or other meaningful-change policy.</remarks>
+/// <remarks>Only semantic changes advance revisions or notify observers. Equality is determined by <c>StateComparison&lt;TDefinition&gt;</c>, allowing each definition to apply exact equality, deadband, hysteresis, or other meaningful-change policy. Construction is allocation-free; observer infrastructure is created lazily through ESPressio System so global publishers do not consume pre-provider DRAM.</remarks>
 template<typename TContract>
 class StatePublisher final {
     class PublisherObservable final : public Observable::ThreadSafeObservable {
@@ -114,9 +115,23 @@ class StatePublisher final {
     DeviceIdentifier _origin{};
     StateEpoch _epoch = 1;
     typename StateSourceTuple<TContract>::Type _sources{};
-    std::shared_ptr<PublisherObservable> _observable =
-        std::make_shared<PublisherObservable>();
+    std::shared_ptr<PublisherObservable> _observable;
     mutable std::recursive_mutex _mutex;
+
+    /// <summary>Creates observer infrastructure on first actual use using the active System memory provider.</summary>
+    bool EnsureObservable() {
+        std::lock_guard<std::recursive_mutex> lock(_mutex);
+        if (_observable) return true;
+        try {
+            _observable = System::Memory::MakeShared<
+                PublisherObservable,
+                System::Memory::MemoryPolicy::ExternalPreferred
+            >();
+            return static_cast<bool>(_observable);
+        } catch (...) {
+            return false;
+        }
+    }
 
     template<typename TDefinition>
     StateSourceSlot<TDefinition>& SourceSlot() {
@@ -172,7 +187,7 @@ class StatePublisher final {
     }
 
 public:
-    /// <summary>Creates a state publisher for the supplied origin and non-zero epoch.</summary>
+    /// <summary>Creates a state publisher for the supplied origin and non-zero epoch without allocating observer infrastructure.</summary>
     explicit StatePublisher(
         const DeviceIdentifier& origin = DeviceIdentifier{},
         StateEpoch epoch = 1
@@ -182,6 +197,7 @@ public:
     Observable::ObserverHandlePtr RegisterObserver(
         IStatePublisherObserver* observer
     ) {
+        if (!EnsureObservable()) return {};
         return _observable->template RegisterObserverAs<
             IStatePublisherObserver
         >(observer);
@@ -190,6 +206,7 @@ public:
     /// <summary>Registers one observer for publisher-level events and every typed state in this contract.</summary>
     template<typename TObserver>
     Observable::ObserverHandlePtr RegisterContractObserver(TObserver* observer) {
+        if (!EnsureObservable()) return {};
         return StatePublisherContractObserverRegistrar<TContract>::Register(
             *_observable, observer
         );
@@ -204,6 +221,7 @@ public:
             TContract::template Contains<TDefinition>,
             "State definition is not part of this StateContract"
         );
+        if (!EnsureObservable()) return {};
         return _observable->template RegisterObserverAs<
             IStatePublishedObserver<TDefinition>
         >(observer);
@@ -211,7 +229,7 @@ public:
 
     /// <summary>Unregisters a previously registered publisher observer.</summary>
     void UnregisterObserver(Observable::IObserver* observer) {
-        _observable->UnregisterObserver(observer);
+        if (_observable) _observable->UnregisterObserver(observer);
     }
 
     /// <summary>Gets the device identifier written into published state metadata.</summary>
@@ -223,7 +241,7 @@ public:
     /// <typeparam name="TDefinition">State definition whose source is registered.</typeparam>
     template<typename TDefinition>
     bool RegisterSource(std::function<StateValueType<TDefinition>()> source) {
-        if (!source) return false;
+        if (!source || !EnsureObservable()) return false;
         {
             std::lock_guard<std::recursive_mutex> lock(_mutex);
             auto& slot = SourceSlot<TDefinition>();
@@ -248,7 +266,7 @@ public:
             source.Source = {};
             source.LastPublished.reset();
         }
-        if (hadSource) {
+        if (hadSource && _observable) {
             _observable->SourceUnregistered(StateTypeIdOf<TDefinition>);
         }
         return hadSource;
@@ -265,6 +283,7 @@ public:
     /// <returns>True when a source exists. A semantically unchanged value is treated as a successful no-op and does not advance the revision or notify observers.</returns>
     template<typename TDefinition>
     bool Publish() {
+        if (!EnsureObservable()) return false;
         StateUpdate<StateValueType<TDefinition>> update;
         bool changed = false;
         {
@@ -290,6 +309,7 @@ public:
     /// <returns>True for both a published change and a semantically unchanged successful no-op.</returns>
     template<typename TDefinition>
     bool Publish(const StateValueType<TDefinition>& value) {
+        if (!EnsureObservable()) return false;
         StateUpdate<StateValueType<TDefinition>> update;
         bool changed = false;
         {
@@ -308,6 +328,7 @@ public:
     /// <returns>True for both a published change and a semantically unchanged successful no-op.</returns>
     template<typename TDefinition>
     bool Publish(StateValueType<TDefinition>&& value) {
+        if (!EnsureObservable()) return false;
         StateUpdate<StateValueType<TDefinition>> update;
         bool changed = false;
         {
