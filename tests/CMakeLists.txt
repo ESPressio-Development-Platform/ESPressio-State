@@ -39,6 +39,7 @@ foreach(target IN ITEMS
     test_state_protocol
     test_state_comparison
     test_state_comparison_remote
+    test_state_source_callback_boundaries
 )
     add_executable(${target} ${target}.cpp)
     target_include_directories(${target} PRIVATE ${ESPRESSIO_STATE_TEST_INCLUDE_DIRS})
@@ -49,3 +50,4 @@ add_test(NAME state_introspection COMMAND test_state_introspection)
 add_test(NAME state_protocol COMMAND test_state_protocol)
 add_test(NAME state_comparison COMMAND test_state_comparison)
 add_test(NAME state_comparison_remote COMMAND test_state_comparison_remote)
+add_test(NAME state_source_callback_boundaries COMMAND test_state_source_callback_boundaries)
