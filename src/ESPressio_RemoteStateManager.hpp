@@ -8,6 +8,7 @@
 #include <utility>
 
 #include <ESPressio_Memory.hpp>
+#include <ESPressio_Synchronization.hpp>
 #include <ESPressio_ThreadSafeObservable.hpp>
 
 #include "ESPressio_DeviceIdentifier.hpp"
@@ -17,7 +18,6 @@
 namespace ESPressio {
 namespace State {
 
-/// <summary>Describes the currently known connectivity or freshness state of a remote device.</summary>
 enum class RemoteDeviceAvailability : uint8_t {
     Unknown = 0,
     Connected,
@@ -26,15 +26,11 @@ enum class RemoteDeviceAvailability : uint8_t {
     ConnectionLost
 };
 
-/// <summary>Lightweight snapshot of a known remote device and its availability.</summary>
 struct RemoteDeviceSnapshot {
-    /// <summary>Stable remote-device identifier.</summary>
     DeviceIdentifier Identifier{};
-    /// <summary>Current known device availability.</summary>
     RemoteDeviceAvailability Availability = RemoteDeviceAvailability::Unknown;
 };
 
-/// <summary>Internal typed storage for the latest accepted value and revision of one remote state.</summary>
 template<typename TValue>
 struct RemoteStateSlot {
     TValue Value{};
@@ -43,41 +39,31 @@ struct RemoteStateSlot {
     bool HasValue = false;
 };
 
-/// <summary>Read-only snapshot of one typed remote state and its owning device's availability.</summary>
 template<typename TValue>
 struct RemoteStateSnapshot {
-    /// <summary>Latest accepted state value.</summary>
     TValue Value{};
-    /// <summary>Epoch associated with the latest accepted value.</summary>
     StateEpoch Epoch = 0;
-    /// <summary>Revision associated with the latest accepted value.</summary>
     StateRevision Revision = 0;
-    /// <summary>Current known availability of the owning remote device.</summary>
     RemoteDeviceAvailability Availability = RemoteDeviceAvailability::Unknown;
-    /// <summary>Indicates whether a value has yet been accepted for this state.</summary>
     bool HasValue = false;
 };
 
-/// <summary>Maps a state contract to its tuple of typed remote-state slots.</summary>
 template<typename TContract>
 struct RemoteStateTuple;
 
 template<typename... TDefinitions>
 struct RemoteStateTuple<StateContract<TDefinitions...>> {
-    /// <summary>Tuple containing one typed remote-state slot per contract definition.</summary>
     using Type = std::tuple<RemoteStateSlot<StateValueType<TDefinitions>>...>;
 };
 
 /// <summary>Maintains bounded typed state snapshots and availability for remote devices.</summary>
 /// <typeparam name="TContract">State contract accepted by the manager.</typeparam>
 /// <typeparam name="TMaximumDevices">Maximum number of remote devices retained simultaneously.</typeparam>
-/// <remarks>Construction is allocation-free. On first use the manager reserves bounded ExternalPreferred capacity, but only materializes records for devices that are actually observed. This keeps unused maximum-device slots in PSRAM capacity rather than constructing complete state tuples for absent peers.</remarks>
+/// <remarks>Runtime mutation is serialized through ESPressio System synchronization. Storage is reserved lazily in ExternalPreferred memory and records are materialized only for observed devices.</remarks>
 template<typename TContract, std::size_t TMaximumDevices>
 class RemoteStateManager final {
 public:
-    /// <summary>State contract accepted by this manager.</summary>
     using Contract = TContract;
-    /// <summary>Maximum number of remote-device records retained by this manager.</summary>
     static constexpr std::size_t MaximumDevices = TMaximumDevices;
 
 private:
@@ -155,16 +141,13 @@ private:
     >;
 
     mutable DeviceStorage _devices;
-    mutable std::recursive_mutex _mutex;
+    mutable System::Synchronization::RecursiveMutex _mutex;
     mutable std::shared_ptr<ManagerObservable> _observable;
 
-    /// <summary>Reserves bounded runtime storage using the provider active at first actual use.</summary>
     bool EnsureRuntimeStorage() const {
-        std::lock_guard<std::recursive_mutex> lock(_mutex);
+        std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
         try {
-            if (_devices.capacity() < TMaximumDevices) {
-                _devices.reserve(TMaximumDevices);
-            }
+            if (_devices.capacity() < TMaximumDevices) _devices.reserve(TMaximumDevices);
             if (!_observable) {
                 _observable = System::Memory::MakeShared<
                     ManagerObservable,
@@ -209,22 +192,26 @@ private:
         StateRevision revision,
         TValue&& value
     ) {
-        static_assert(TContract::template Contains<TDefinition>,
-            "State definition is not part of this StateContract");
+        static_assert(
+            TContract::template Contains<TDefinition>,
+            "State definition is not part of this StateContract"
+        );
         if (!EnsureRuntimeStorage()) return false;
 
         bool created = false;
         bool changed = false;
         bool accepted = false;
         {
-            std::lock_guard<std::recursive_mutex> lock(_mutex);
+            std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
             auto* device = FindOrCreateLocked(identifier, created);
             if (device == nullptr || revision == 0) {
                 accepted = false;
             } else {
                 auto& slot = std::get<TContract::template IndexOf<TDefinition>()>(device->States);
-                if (slot.HasValue &&
-                    (epoch < slot.Epoch || (epoch == slot.Epoch && revision <= slot.Revision))) {
+                if (
+                    slot.HasValue &&
+                    (epoch < slot.Epoch || (epoch == slot.Epoch && revision <= slot.Revision))
+                ) {
                     accepted = false;
                 } else {
                     changed = !slot.HasValue || !(slot.Value == value);
@@ -239,41 +226,48 @@ private:
 
         if (created) _observable->DeviceRegistered(identifier);
         if (!accepted) {
-            _observable->StateRejected(identifier, StateTypeIdOf<TDefinition>, epoch, revision);
+            _observable->StateRejected(
+                identifier,
+                StateTypeIdOf<TDefinition>,
+                epoch,
+                revision
+            );
             return false;
         }
-        _observable->StateAccepted(identifier, StateTypeIdOf<TDefinition>, epoch, revision, changed);
+        _observable->StateAccepted(
+            identifier,
+            StateTypeIdOf<TDefinition>,
+            epoch,
+            revision,
+            changed
+        );
         return true;
     }
 
 public:
-    /// <summary>Creates an empty bounded remote-state manager without allocating its runtime tables.</summary>
     RemoteStateManager() = default;
 
-    /// <summary>Registers an observer for manager-level remote-state and availability events.</summary>
     Observable::ObserverHandlePtr RegisterObserver(IRemoteStateManagerObserver* observer) {
         if (!EnsureRuntimeStorage()) return {};
         return _observable->template RegisterObserverAs<IRemoteStateManagerObserver>(observer);
     }
 
-    /// <summary>Unregisters a previously registered manager observer.</summary>
     void UnregisterObserver(Observable::IObserver* observer) {
         if (!EnsureRuntimeStorage()) return;
         _observable->UnregisterObserver(observer);
     }
 
-    /// <summary>Reads the latest snapshot for one typed state on a remote device.</summary>
-    /// <typeparam name="TDefinition">State definition to read.</typeparam>
-    /// <returns><c>true</c> when the remote device is known.</returns>
     template<typename TDefinition>
     bool Read(
         const DeviceIdentifier& identifier,
         RemoteStateSnapshot<StateValueType<TDefinition>>& snapshot
     ) const {
-        static_assert(TContract::template Contains<TDefinition>,
-            "State definition is not part of this StateContract");
+        static_assert(
+            TContract::template Contains<TDefinition>,
+            "State definition is not part of this StateContract"
+        );
         if (!EnsureRuntimeStorage()) return false;
-        std::lock_guard<std::recursive_mutex> lock(_mutex);
+        std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
         const auto* device = FindLocked(identifier);
         if (device == nullptr) return false;
         const auto& slot = std::get<TContract::template IndexOf<TDefinition>()>(device->States);
@@ -285,7 +279,6 @@ public:
         return true;
     }
 
-    /// <summary>Applies a copied remote-state value when its epoch/revision is newer than the retained value.</summary>
     template<typename TDefinition>
     bool Apply(
         const DeviceIdentifier& identifier,
@@ -296,7 +289,6 @@ public:
         return ApplyValue<TDefinition>(identifier, epoch, revision, value);
     }
 
-    /// <summary>Applies a moved remote-state value when its epoch/revision is newer than the retained value.</summary>
     template<typename TDefinition>
     bool Apply(
         const DeviceIdentifier& identifier,
@@ -307,7 +299,6 @@ public:
         return ApplyValue<TDefinition>(identifier, epoch, revision, std::move(value));
     }
 
-    /// <summary>Sets the known availability of a remote device, creating its record when capacity permits.</summary>
     bool SetAvailability(
         const DeviceIdentifier& identifier,
         RemoteDeviceAvailability availability
@@ -317,7 +308,7 @@ public:
         RemoteDeviceAvailability previous = RemoteDeviceAvailability::Unknown;
         bool changed = false;
         {
-            std::lock_guard<std::recursive_mutex> lock(_mutex);
+            std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
             auto* device = FindOrCreateLocked(identifier, created);
             if (device == nullptr) return false;
             previous = device->Availability;
@@ -329,32 +320,31 @@ public:
         return true;
     }
 
-    /// <summary>Gets the known availability of a remote device.</summary>
     RemoteDeviceAvailability GetAvailability(const DeviceIdentifier& identifier) const {
         if (!EnsureRuntimeStorage()) return RemoteDeviceAvailability::Unknown;
-        std::lock_guard<std::recursive_mutex> lock(_mutex);
+        std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
         const auto* device = FindLocked(identifier);
         return device != nullptr ? device->Availability : RemoteDeviceAvailability::Unknown;
     }
 
-    /// <summary>Gets the number of currently retained remote-device records.</summary>
     std::size_t GetDeviceCount() const {
         if (!EnsureRuntimeStorage()) return 0;
-        std::lock_guard<std::recursive_mutex> lock(_mutex);
+        std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
         return _devices.size();
     }
 
-    /// <summary>Invokes a callback for a stable externally backed snapshot of each known remote device.</summary>
-    /// <typeparam name="TCallback">Callable accepting a <c>RemoteDeviceSnapshot</c>.</typeparam>
     template<typename TCallback>
     void ForEachDevice(TCallback&& callback) const {
         if (!EnsureRuntimeStorage()) return;
         SnapshotStorage snapshots;
         {
-            std::lock_guard<std::recursive_mutex> lock(_mutex);
+            std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
             snapshots.reserve(_devices.size());
             for (const auto& device : _devices) {
-                snapshots.push_back(RemoteDeviceSnapshot{device.Identifier, device.Availability});
+                snapshots.push_back(RemoteDeviceSnapshot{
+                    device.Identifier,
+                    device.Availability
+                });
             }
         }
         for (const auto& snapshot : snapshots) callback(snapshot);
