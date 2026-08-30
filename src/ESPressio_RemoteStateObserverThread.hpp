@@ -33,7 +33,7 @@ namespace State {
 /// <summary>Moves remote-state change notifications onto a dedicated precision-thread execution context.</summary>
 /// <typeparam name="TContract">State contract observed by the thread.</typeparam>
 /// <typeparam name="TMaximumDevices">Maximum remote-device capacity of the associated manager.</typeparam>
-/// <remarks>Manager callbacks only mark bounded dirty-state sets and wake the worker; observer callbacks are dispatched later from the thread context. Construction is allocation-free; bounded ExternalPreferred bookkeeping is materialized during <c>Prepare()</c> or first observer registration.</remarks>
+/// <remarks>Manager callbacks only mark bounded dirty-state sets and wake the worker; observer callbacks are dispatched later from the thread context. Construction is allocation-free; bounded ExternalPreferred bookkeeping capacity is reserved during <c>Prepare()</c> or first observer registration and only live entries are materialized.</remarks>
 template<typename TContract, std::size_t TMaximumDevices>
 class RemoteStateObserverThread final :
     public Threads::PrecisionThread<
@@ -59,20 +59,17 @@ private:
         System::Memory::MemoryPolicy::ExternalPreferred;
 
     struct DirtyState {
-        bool Used = false;
         DeviceIdentifier Device{};
         StateTypeId TypeId = 0;
     };
 
     struct DirtyAvailability {
-        bool Used = false;
         DeviceIdentifier Device{};
         RemoteDeviceAvailability Previous = RemoteDeviceAvailability::Unknown;
         RemoteDeviceAvailability Current = RemoteDeviceAvailability::Unknown;
     };
 
     struct DeliveredDevice {
-        bool Used = false;
         DeviceIdentifier Device{};
         typename RemoteStateTuple<TContract>::Type States{};
     };
@@ -133,10 +130,10 @@ private:
     Manager& _manager;
     Observable::ObserverHandlePtr _managerHandle;
 
-    // Double-buffered dirty sets are fixed-size after Prepare(). Their backing
-    // storage is external-preferred so bounded observer bookkeeping does not
-    // permanently consume scarce internal DRAM, while drains remain
-    // allocation-free after preparation.
+    // Dirty sets remain double-buffered so producer callbacks never contend
+    // with observer delivery. Only capacity is reserved up-front: live entries
+    // are appended sparsely, avoiding two fully materialized state tables and
+    // two fully materialized availability tables for mostly-idle systems.
     DirtyStateStorage _dirtyStates;
     DirtyStateStorage _processingStates;
     DirtyAvailabilityStorage _dirtyAvailability;
@@ -147,24 +144,24 @@ private:
     mutable std::mutex _dirtyMutex;
     bool _prepared = false;
 
-    /// <summary>Materializes bounded observer bookkeeping with the active System memory provider.</summary>
+    /// <summary>Reserves bounded observer bookkeeping with the active System memory provider.</summary>
     bool EnsureRuntimeStorage() {
         std::lock_guard<std::mutex> lock(_dirtyMutex);
         try {
-            if (_dirtyStates.size() != MaximumDirtyStates) {
-                _dirtyStates.assign(MaximumDirtyStates, DirtyState{});
+            if (_dirtyStates.capacity() < MaximumDirtyStates) {
+                _dirtyStates.reserve(MaximumDirtyStates);
             }
-            if (_processingStates.size() != MaximumDirtyStates) {
-                _processingStates.assign(MaximumDirtyStates, DirtyState{});
+            if (_processingStates.capacity() < MaximumDirtyStates) {
+                _processingStates.reserve(MaximumDirtyStates);
             }
-            if (_dirtyAvailability.size() != TMaximumDevices) {
-                _dirtyAvailability.assign(TMaximumDevices, DirtyAvailability{});
+            if (_dirtyAvailability.capacity() < TMaximumDevices) {
+                _dirtyAvailability.reserve(TMaximumDevices);
             }
-            if (_processingAvailability.size() != TMaximumDevices) {
-                _processingAvailability.assign(TMaximumDevices, DirtyAvailability{});
+            if (_processingAvailability.capacity() < TMaximumDevices) {
+                _processingAvailability.reserve(TMaximumDevices);
             }
-            if (_delivered.size() != TMaximumDevices) {
-                _delivered.assign(TMaximumDevices, DeliveredDevice{});
+            if (_delivered.capacity() < TMaximumDevices) {
+                _delivered.reserve(TMaximumDevices);
             }
             if (!_observable) {
                 _observable = System::Memory::MakeShared<
@@ -180,33 +177,21 @@ private:
 
     DeliveredDevice* FindOrCreateDelivered(const DeviceIdentifier& device) {
         for (auto& record : _delivered) {
-            if (record.Used && record.Device == device) return &record;
+            if (record.Device == device) return &record;
         }
-        for (auto& record : _delivered) {
-            if (!record.Used) {
-                record.Used = true;
-                record.Device = device;
-                return &record;
-            }
-        }
-        return nullptr;
+        if (_delivered.size() >= TMaximumDevices) return nullptr;
+        _delivered.push_back(DeliveredDevice{});
+        _delivered.back().Device = device;
+        return &_delivered.back();
     }
 
     void MarkStateDirty(const DeviceIdentifier& device, StateTypeId typeId) {
         std::lock_guard<std::mutex> lock(_dirtyMutex);
         for (const auto& record : _dirtyStates) {
-            if (record.Used && record.Device == device && record.TypeId == typeId) {
-                return;
-            }
+            if (record.Device == device && record.TypeId == typeId) return;
         }
-        for (auto& record : _dirtyStates) {
-            if (!record.Used) {
-                record.Used = true;
-                record.Device = device;
-                record.TypeId = typeId;
-                return;
-            }
-        }
+        if (_dirtyStates.size() >= MaximumDirtyStates) return;
+        _dirtyStates.push_back(DirtyState{device, typeId});
     }
 
     void MarkAvailabilityDirty(
@@ -216,20 +201,17 @@ private:
     ) {
         std::lock_guard<std::mutex> lock(_dirtyMutex);
         for (auto& record : _dirtyAvailability) {
-            if (record.Used && record.Device == device) {
+            if (record.Device == device) {
                 record.Current = current;
                 return;
             }
         }
-        for (auto& record : _dirtyAvailability) {
-            if (!record.Used) {
-                record.Used = true;
-                record.Device = device;
-                record.Previous = previous;
-                record.Current = current;
-                return;
-            }
-        }
+        if (_dirtyAvailability.size() >= TMaximumDevices) return;
+        _dirtyAvailability.push_back(DirtyAvailability{
+            device,
+            previous,
+            current
+        });
     }
 
     template<std::size_t TIndex = 0>
@@ -284,21 +266,19 @@ private:
             _processingAvailability.swap(_dirtyAvailability);
         }
 
-        for (auto& record : _processingAvailability) {
-            if (!record.Used) continue;
+        for (const auto& record : _processingAvailability) {
             _observable->AvailabilityChanged(
                 record.Device,
                 record.Previous,
                 record.Current
             );
-            record = DirtyAvailability{};
         }
+        _processingAvailability.clear();
 
-        for (auto& record : _processingStates) {
-            if (!record.Used) continue;
+        for (const auto& record : _processingStates) {
             NotifyState(record);
-            record = DirtyState{};
         }
+        _processingStates.clear();
     }
 
 protected:
@@ -317,7 +297,7 @@ public:
         this->SetIterationPeriod(Units::MilliSeconds<uint32_t>(1000));
     }
 
-    /// <summary>Materializes bounded bookkeeping and registers the thread with its remote-state manager before the worker is started.</summary>
+    /// <summary>Reserves bounded bookkeeping and registers the thread with its remote-state manager before the worker is started.</summary>
     /// <returns><c>true</c> when storage and manager observer registration are active.</returns>
     bool Prepare() {
         if (_prepared) return true;
@@ -335,11 +315,11 @@ public:
         _prepared = false;
         {
             std::lock_guard<std::mutex> lock(_dirtyMutex);
-            std::fill(_dirtyStates.begin(), _dirtyStates.end(), DirtyState{});
-            std::fill(_processingStates.begin(), _processingStates.end(), DirtyState{});
-            std::fill(_dirtyAvailability.begin(), _dirtyAvailability.end(), DirtyAvailability{});
-            std::fill(_processingAvailability.begin(), _processingAvailability.end(), DirtyAvailability{});
-            std::fill(_delivered.begin(), _delivered.end(), DeliveredDevice{});
+            _dirtyStates.clear();
+            _processingStates.clear();
+            _dirtyAvailability.clear();
+            _processingAvailability.clear();
+            _delivered.clear();
         }
         this->Shutdown();
     }
