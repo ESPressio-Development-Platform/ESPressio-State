@@ -71,7 +71,7 @@ struct RemoteStateTuple<StateContract<TDefinitions...>> {
 /// <summary>Maintains bounded typed state snapshots and availability for remote devices.</summary>
 /// <typeparam name="TContract">State contract accepted by the manager.</typeparam>
 /// <typeparam name="TMaximumDevices">Maximum number of remote devices retained simultaneously.</typeparam>
-/// <remarks>Construction is allocation-free; bounded device storage and observer infrastructure are materialized lazily on first use so globally constructed managers can bind ExternalPreferred storage to the installed platform provider.</remarks>
+/// <remarks>Construction is allocation-free. On first use the manager reserves bounded ExternalPreferred capacity, but only materializes records for devices that are actually observed. This keeps unused maximum-device slots in PSRAM capacity rather than constructing complete state tuples for absent peers.</remarks>
 template<typename TContract, std::size_t TMaximumDevices>
 class RemoteStateManager final {
 public:
@@ -140,7 +140,6 @@ private:
     };
 
     struct DeviceRecord {
-        bool Used = false;
         DeviceIdentifier Identifier{};
         RemoteDeviceAvailability Availability = RemoteDeviceAvailability::Unknown;
         typename RemoteStateTuple<TContract>::Type States{};
@@ -159,12 +158,12 @@ private:
     mutable std::recursive_mutex _mutex;
     mutable std::shared_ptr<ManagerObservable> _observable;
 
-    /// <summary>Materializes bounded runtime storage using the provider active at first actual use.</summary>
+    /// <summary>Reserves bounded runtime storage using the provider active at first actual use.</summary>
     bool EnsureRuntimeStorage() const {
         std::lock_guard<std::recursive_mutex> lock(_mutex);
         try {
-            if (_devices.size() != TMaximumDevices) {
-                _devices.assign(TMaximumDevices, DeviceRecord{});
+            if (_devices.capacity() < TMaximumDevices) {
+                _devices.reserve(TMaximumDevices);
             }
             if (!_observable) {
                 _observable = System::Memory::MakeShared<
@@ -180,14 +179,14 @@ private:
 
     DeviceRecord* FindLocked(const DeviceIdentifier& identifier) {
         for (auto& device : _devices) {
-            if (device.Used && device.Identifier == identifier) return &device;
+            if (device.Identifier == identifier) return &device;
         }
         return nullptr;
     }
 
     const DeviceRecord* FindLocked(const DeviceIdentifier& identifier) const {
         for (const auto& device : _devices) {
-            if (device.Used && device.Identifier == identifier) return &device;
+            if (device.Identifier == identifier) return &device;
         }
         return nullptr;
     }
@@ -196,15 +195,11 @@ private:
         created = false;
         if (identifier.IsZero()) return nullptr;
         if (auto* existing = FindLocked(identifier)) return existing;
-        for (auto& device : _devices) {
-            if (!device.Used) {
-                device.Used = true;
-                device.Identifier = identifier;
-                created = true;
-                return &device;
-            }
-        }
-        return nullptr;
+        if (_devices.size() >= TMaximumDevices) return nullptr;
+        _devices.push_back(DeviceRecord{});
+        _devices.back().Identifier = identifier;
+        created = true;
+        return &_devices.back();
     }
 
     template<typename TDefinition, typename TValue>
@@ -346,9 +341,7 @@ public:
     std::size_t GetDeviceCount() const {
         if (!EnsureRuntimeStorage()) return 0;
         std::lock_guard<std::recursive_mutex> lock(_mutex);
-        std::size_t count = 0;
-        for (const auto& device : _devices) if (device.Used) ++count;
-        return count;
+        return _devices.size();
     }
 
     /// <summary>Invokes a callback for a stable externally backed snapshot of each known remote device.</summary>
@@ -357,11 +350,10 @@ public:
     void ForEachDevice(TCallback&& callback) const {
         if (!EnsureRuntimeStorage()) return;
         SnapshotStorage snapshots;
-        snapshots.reserve(TMaximumDevices);
         {
             std::lock_guard<std::recursive_mutex> lock(_mutex);
+            snapshots.reserve(_devices.size());
             for (const auto& device : _devices) {
-                if (!device.Used) continue;
                 snapshots.push_back(RemoteDeviceSnapshot{device.Identifier, device.Availability});
             }
         }
