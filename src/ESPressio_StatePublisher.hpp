@@ -24,7 +24,8 @@ namespace State {
 template<typename TDefinition>
 struct StateSourceSlot {
     using Value = StateValueType<TDefinition>;
-    std::function<Value()> Source;
+    using SourceCallback = std::function<Value()>;
+    std::shared_ptr<const SourceCallback> Source;
     std::optional<Value> LastPublished;
     StateRevision Revision = 0;
 };
@@ -53,7 +54,7 @@ struct StatePublisherContractObserverRegistrar<StateContract<TDefinitions...>> {
 
 /// <summary>Publishes typed local state values with epoch/revision metadata for a fixed state contract.</summary>
 /// <typeparam name="TContract">State contract defining values that may be published.</typeparam>
-/// <remarks>Only semantic changes advance revisions or notify observers. Publisher mutation is serialized by a System-provided recursive mutex so platform synchronization remains behind ESPressio-System/ESPressio-ESP32.</remarks>
+/// <remarks>Only semantic changes advance revisions or notify observers. Publisher mutation is serialized by a System-provided mutex. Registered source callables are pinned in external-preferred immutable shared storage, invoked without the publisher mutex held, and revalidated before their result is committed.</remarks>
 template<typename TContract>
 class StatePublisher final {
     class PublisherObservable final : public Observable::ThreadSafeObservable {
@@ -103,20 +104,25 @@ class StatePublisher final {
     StateEpoch _epoch = 1;
     typename StateSourceTuple<TContract>::Type _sources{};
     std::shared_ptr<PublisherObservable> _observable;
-    mutable System::Synchronization::RecursiveMutex _mutex;
+    mutable System::Synchronization::Mutex _mutex;
 
-    bool EnsureObservable() {
-        std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
-        if (_observable) return true;
+    std::shared_ptr<PublisherObservable> EnsureObservable() {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        if (_observable) return _observable;
         try {
             _observable = System::Memory::MakeShared<
                 PublisherObservable,
                 System::Memory::MemoryPolicy::ExternalPreferred
             >();
-            return static_cast<bool>(_observable);
         } catch (...) {
-            return false;
+            return {};
         }
+        return _observable;
+    }
+
+    std::shared_ptr<PublisherObservable> ObservableSnapshot() const {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        return _observable;
     }
 
     template<typename TDefinition>
@@ -168,6 +174,11 @@ class StatePublisher final {
         SourceSlot<TDefinition>().LastPublished = value;
     }
 
+    template<typename TDefinition>
+    using SourceRegistration = std::shared_ptr<
+        const typename StateSourceSlot<TDefinition>::SourceCallback
+    >;
+
 public:
     explicit StatePublisher(
         const DeviceIdentifier& origin = DeviceIdentifier{},
@@ -175,16 +186,20 @@ public:
     ) : _origin(origin), _epoch(epoch == 0 ? 1 : epoch) {}
 
     Observable::ObserverHandlePtr RegisterObserver(IStatePublisherObserver* observer) {
-        if (!EnsureObservable()) return {};
-        return _observable->template RegisterObserverAs<IStatePublisherObserver>(observer);
+        auto observable = EnsureObservable();
+        return observable
+            ? observable->template RegisterObserverAs<IStatePublisherObserver>(observer)
+            : Observable::ObserverHandlePtr{};
     }
 
     template<typename TObserver>
     Observable::ObserverHandlePtr RegisterContractObserver(TObserver* observer) {
-        if (!EnsureObservable()) return {};
-        return StatePublisherContractObserverRegistrar<TContract>::Register(
-            *_observable, observer
-        );
+        auto observable = EnsureObservable();
+        return observable
+            ? StatePublisherContractObserverRegistrar<TContract>::Register(
+                *observable, observer
+            )
+            : Observable::ObserverHandlePtr{};
     }
 
     template<typename TDefinition>
@@ -195,14 +210,17 @@ public:
             TContract::template Contains<TDefinition>,
             "State definition is not part of this StateContract"
         );
-        if (!EnsureObservable()) return {};
-        return _observable->template RegisterObserverAs<
-            IStatePublishedObserver<TDefinition>
-        >(observer);
+        auto observable = EnsureObservable();
+        return observable
+            ? observable->template RegisterObserverAs<
+                IStatePublishedObserver<TDefinition>
+            >(observer)
+            : Observable::ObserverHandlePtr{};
     }
 
     void UnregisterObserver(Observable::IObserver* observer) {
-        if (_observable) _observable->UnregisterObserver(observer);
+        auto observable = ObservableSnapshot();
+        if (observable) observable->UnregisterObserver(observer);
     }
 
     const DeviceIdentifier& Origin() const noexcept { return _origin; }
@@ -210,14 +228,27 @@ public:
 
     template<typename TDefinition>
     bool RegisterSource(std::function<StateValueType<TDefinition>()> source) {
-        if (!source || !EnsureObservable()) return false;
+        if (!source) return false;
+        auto observable = EnsureObservable();
+        if (!observable) return false;
+
+        SourceRegistration<TDefinition> registration;
+        try {
+            registration = System::Memory::MakeShared<
+                typename StateSourceSlot<TDefinition>::SourceCallback,
+                System::Memory::MemoryPolicy::ExternalPreferred
+            >(std::move(source));
+        } catch (...) {
+            return false;
+        }
+
         {
-            std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
+            std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
             auto& slot = SourceSlot<TDefinition>();
-            slot.Source = std::move(source);
+            slot.Source = std::move(registration);
             slot.LastPublished.reset();
         }
-        _observable->SourceRegistered(StateTypeIdOf<TDefinition>);
+        observable->SourceRegistered(StateTypeIdOf<TDefinition>);
         return true;
     }
 
@@ -225,83 +256,114 @@ public:
     bool UnregisterSource() {
         bool hadSource = false;
         {
-            std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
+            std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
             auto& source = SourceSlot<TDefinition>();
             hadSource = static_cast<bool>(source.Source);
-            source.Source = {};
+            source.Source.reset();
             source.LastPublished.reset();
         }
-        if (hadSource && _observable) _observable->SourceUnregistered(StateTypeIdOf<TDefinition>);
+        auto observable = ObservableSnapshot();
+        if (hadSource && observable) {
+            observable->SourceUnregistered(StateTypeIdOf<TDefinition>);
+        }
         return hadSource;
     }
 
     template<typename TDefinition>
     bool HasSource() const {
-        std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         return static_cast<bool>(SourceSlot<TDefinition>().Source);
     }
 
     template<typename TDefinition>
     bool Publish() {
-        if (!EnsureObservable()) return false;
+        auto observable = EnsureObservable();
+        if (!observable) return false;
+
+        SourceRegistration<TDefinition> source;
+        {
+            std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+            source = SourceSlot<TDefinition>().Source;
+        }
+        if (!source) return false;
+
+        // Source code is consumer-provided and may synchronously re-enter this
+        // publisher or block on other subsystems. Never invoke it under _mutex.
+        auto value = (*source)();
+
         StateUpdate<StateValueType<TDefinition>> update;
         bool changed = false;
         {
-            std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
-            auto& source = SourceSlot<TDefinition>();
-            if (!source.Source) return false;
-            auto value = source.Source();
+            std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+            auto& current = SourceSlot<TDefinition>();
+            if (current.Source != source) {
+                return false;
+            }
             changed = IsMeaningfulChangeLocked<TDefinition>(value);
             if (changed) {
                 RememberPublishedLocked<TDefinition>(value);
                 update = MakeUpdateLocked<TDefinition>(std::move(value), true);
             }
         }
-        if (changed) _observable->template Published<TDefinition>(update);
+        if (changed) observable->template Published<TDefinition>(update);
         return true;
     }
 
     template<typename TDefinition>
     bool Publish(const StateValueType<TDefinition>& value) {
-        if (!EnsureObservable()) return false;
+        auto observable = EnsureObservable();
+        if (!observable) return false;
         StateUpdate<StateValueType<TDefinition>> update;
         bool changed = false;
         {
-            std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
+            std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
             changed = IsMeaningfulChangeLocked<TDefinition>(value);
             if (changed) {
                 RememberPublishedLocked<TDefinition>(value);
                 update = MakeUpdateLocked<TDefinition>(value, true);
             }
         }
-        if (changed) _observable->template Published<TDefinition>(update);
+        if (changed) observable->template Published<TDefinition>(update);
         return true;
     }
 
     template<typename TDefinition>
     bool Publish(StateValueType<TDefinition>&& value) {
-        if (!EnsureObservable()) return false;
+        auto observable = EnsureObservable();
+        if (!observable) return false;
         StateUpdate<StateValueType<TDefinition>> update;
         bool changed = false;
         {
-            std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
+            std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
             changed = IsMeaningfulChangeLocked<TDefinition>(value);
             if (changed) {
                 RememberPublishedLocked<TDefinition>(value);
                 update = MakeUpdateLocked<TDefinition>(std::move(value), true);
             }
         }
-        if (changed) _observable->template Published<TDefinition>(update);
+        if (changed) observable->template Published<TDefinition>(update);
         return true;
     }
 
     template<typename TDefinition>
     bool Snapshot(StateUpdate<StateValueType<TDefinition>>& update) {
-        std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
-        auto& source = SourceSlot<TDefinition>();
-        if (!source.Source) return false;
-        auto value = source.Source();
-        update = MakeUpdateLocked<TDefinition>(std::move(value), false);
+        SourceRegistration<TDefinition> source;
+        {
+            std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+            source = SourceSlot<TDefinition>().Source;
+        }
+        if (!source) return false;
+
+        auto value = (*source)();
+
+        {
+            std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+            auto& current = SourceSlot<TDefinition>();
+            if (current.Source != source) {
+                return false;
+            }
+            update = MakeUpdateLocked<TDefinition>(std::move(value), false);
+        }
         return true;
     }
 };
