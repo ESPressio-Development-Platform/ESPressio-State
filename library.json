@@ -22,12 +22,12 @@
     "dependencies": [
         {
             "name": "ESPressio-System",
-            "version": "https://github.com/ESPressio-Development-Platform/ESPressio-System.git#main",
+            "version": "https://github.com/ESPressio-Development-Platform/ESPressio-System.git#structural_realignment",
             "platforms": "*"
         },
         {
             "name": "ESPressio-Observable",
-            "version": "https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#main",
+            "version": "https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#structural_realignment",
             "platforms": "*"
         }
     ]
