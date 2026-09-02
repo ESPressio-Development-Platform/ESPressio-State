@@ -453,7 +453,7 @@ ESPressio-ESP-Now currently contains the opt-in:
 #include <ESPressio_ESPNowStateTransport.hpp>
 ```
 
-on its active `bugfix/39-wifi-coexistence` working branch.
+on its `main` branch.
 
 The adapter maps ESP-NOW MAC peers to `DeviceIdentifier`, carries the State protocol, sends only subscribed State, rejects unsolicited incoming State, acknowledges repository acceptance, and retains at most the latest pending wire image for each `(subscriber, StateType)`.
 
@@ -467,7 +467,7 @@ ESPressio-Serial currently contains the opt-in:
 #include <ESPressio_StateMonitor.hpp>
 ```
 
-on its active `optimisation/39-explicit-thread-lifecycle` working branch.
+on its `main` branch.
 
 `ESPressio::Serial::StateMonitor` can observe selected State lifecycle components and emit Serial diagnostics. It is not included by the normal `ESPressio_Serial.hpp` path, and ESPressio-Serial does not acquire a mandatory State dependency unless an implementing application explicitly selects the State monitor header.
 
@@ -478,7 +478,7 @@ This is intentional: Serial output can affect timing and remains developer opt-i
 The active development package currently resolves:
 
 ```text
-ESPressio Observable 3.0.2 (Git-pinned)
+ESPressio Observable main
 ```
 
 C++17 and RTTI are required by the current Observable observer model.
@@ -499,7 +499,7 @@ Those dependencies are consumed only by optional integration layers that need th
 
 ```ini
 lib_deps =
-    https://github.com/ESPressio-Development-Platform/ESPressio-State.git#feature/1-state-foundation
+    https://github.com/ESPressio-Development-Platform/ESPressio-State.git#main
 ```
 
 Arduino-ESP32 builds must select C++17 and RTTI explicitly when the framework supplies GNU++11 and `-fno-rtti` defaults:
