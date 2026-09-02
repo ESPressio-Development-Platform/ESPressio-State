@@ -22,12 +22,12 @@
     "dependencies": [
         {
             "name": "ESPressio-System",
-            "version": "https://github.com/ESPressio-Development-Platform/ESPressio-System.git#feature/1-system-memory-policy",
+            "version": "https://github.com/ESPressio-Development-Platform/ESPressio-System.git#main",
             "platforms": "*"
         },
         {
             "name": "ESPressio-Observable",
-            "version": "https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#feature/16-rtti-free-observer-registry",
+            "version": "https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#main",
             "platforms": "*"
         }
     ]
