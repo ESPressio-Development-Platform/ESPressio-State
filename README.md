@@ -70,6 +70,8 @@ Unbinding also emits authoritative `Unavailable / SourceUnbound`; binding emits 
 
 `StatePublisher<TContract, TMaximumObservers>` has a finite observer-registration capacity; the default is 8 simultaneous registrations. Capacity is independent of the State contract's number of definitions. A contract observer registered against several typed interfaces still consumes one registration.
 
+Same-State publication notification is non-reentrant. If an observer synchronously mutates the same authoritative State and calls `NotifyChanged` again, the nested call commits its revision but does not recursively enter observers. StatePublisher retains at most one externally-preferred immutable deferred snapshot for that State and dispatches it after the active notification returns. Further changes before deferred dispatch replace that pending snapshot with the newest revision, so obsolete intermediate revisions may be coalesced while emitted revisions remain strictly increasing. This is intentional latest-fact behavior; use Event/stream semantics when every transition must be preserved.
+
 A State-definition-specific `StateComparison<TDefinition>` remains available for application/domain code or higher-level State value wrappers that want semantic equality/deadband behavior before deciding whether to call `NotifyChanged`. Reference-backed State deliberately does not retain a hidden shadow value merely to perform equality suppression.
 
 ## Remote replicas
@@ -144,7 +146,9 @@ remoteState.SetReachability(
 
 ## Observation
 
-Core State lifecycle notification uses ESPressio Observable. The publisher exposes distinct local observations for source binding/unbinding, authoritative availability changes, generic committed publications, and typed committed `StateUpdate` snapshots. Publisher observer registrations are bounded by the publisher's compile-time capacity.
+Core State lifecycle notification uses ESPressio Observable. The publisher exposes distinct local observations for source binding/unbinding, authoritative availability changes, generic committed publications, and typed committed `StateUpdate` snapshots.
+
+Observer registration is explicitly bounded rather than relying on the general Observable registry as an implicit memory limit. `StatePublisher`, `RemoteStateManager`, `StateSubscriptionRegistry`, `StateSubscriberRegistry`, and the optional `RemoteStateObserverThread` each accept an independent compile-time maximum observer count, defaulting to 8 while preserving their separate data-capacity dimensions. Registration order remains the deterministic callback order supplied by ESPressio Observable.
 
 The remote manager exposes distinct observations for:
 
