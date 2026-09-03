@@ -7,6 +7,7 @@ on:
       - 'feature/**'
       - 'bugfix/**'
       - 'optimisation/**'
+      - 'structural_realignment_propagation_ESPressio-Mesh'
   pull_request:
 
 jobs:
@@ -14,11 +15,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout System working branch
+      - name: Checkout System propagation branch
         uses: actions/checkout@v4
         with:
           repository: ESPressio-Development-Platform/ESPressio-System
-          ref: structural_realignment
+          ref: structural_realignment_propagation_ESPressio-Mesh
           path: ESPressio-System
       - name: Checkout Observable working branch
         uses: actions/checkout@v4
@@ -53,7 +54,7 @@ jobs:
           framework = arduino
           lib_deps =
               file://${{ github.workspace }}
-              https://github.com/ESPressio-Development-Platform/ESPressio-System.git#structural_realignment
+              https://github.com/ESPressio-Development-Platform/ESPressio-System.git#structural_realignment_propagation_ESPressio-Mesh
               https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#structural_realignment
           build_unflags = -std=gnu++11
           build_flags = -std=gnu++17 -fno-rtti
@@ -91,7 +92,7 @@ jobs:
           framework = arduino
           lib_deps =
               file://${{ github.workspace }}
-              https://github.com/ESPressio-Development-Platform/ESPressio-System.git#structural_realignment
+              https://github.com/ESPressio-Development-Platform/ESPressio-System.git#structural_realignment_propagation_ESPressio-Mesh
               https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#structural_realignment
           build_unflags = -std=gnu++11
           build_flags = -std=gnu++17 -fno-rtti
@@ -106,8 +107,9 @@ jobs:
           using Contract = ESPressio::State::StateContract<LedState, CounterState>;
           ESPressio::State::RemoteStateManager<Contract, 2> remoteState;
           void setup() {
-              const uint8_t mac[6] = {1,2,3,4,5,6};
-              const auto device = ESPressio::State::DeviceIdentifier::FromMacAddress(mac);
+              ESPressio::State::DeviceIdentifier::Storage identity{};
+              identity[15] = 1;
+              const ESPressio::State::DeviceIdentifier device(identity);
               remoteState.Apply<LedState>(device,1,1,true);
               remoteState.Apply<CounterState>(device,1,1,42);
               const char* name = nullptr;
@@ -135,7 +137,7 @@ jobs:
           framework = arduino
           lib_deps =
               file://${{ github.workspace }}
-              https://github.com/ESPressio-Development-Platform/ESPressio-System.git#structural_realignment
+              https://github.com/ESPressio-Development-Platform/ESPressio-System.git#structural_realignment_propagation_ESPressio-Mesh
               https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#structural_realignment
               https://github.com/ESPressio-Development-Platform/ESPressio-Units.git#structural_realignment
               https://github.com/ESPressio-Development-Platform/ESPressio-Timing.git#structural_realignment
