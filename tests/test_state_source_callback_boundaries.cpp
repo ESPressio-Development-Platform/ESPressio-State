@@ -12,41 +12,59 @@ struct SourceState {
 
 using Contract = StateContract<SourceState>;
 
+class ReentrantObserver final : public IStatePublisherObserver {
+public:
+    StatePublisher<Contract>* Publisher = nullptr;
+    int Bound = 0;
+    int Published = 0;
+    bool SnapshotSucceededDuringBound = false;
+    bool UnboundDuringPublication = false;
+
+    void OnStateSourceBound(const StateAddress&, StateEpoch, StateRevision) override {
+        ++Bound;
+        StateUpdate<uint32_t> snapshot;
+        SnapshotSucceededDuringBound = Publisher->Snapshot<SourceState>(snapshot);
+        assert(snapshot.Value == 11U);
+    }
+
+    void OnStatePublished(const StateAddress&, StateEpoch, StateRevision) override {
+        ++Published;
+        UnboundDuringPublication = Publisher->Unbind<SourceState>(StateUnbindMode::Retain);
+    }
+};
+
+static DeviceIdentifier Device() {
+    DeviceIdentifier::Storage bytes{};
+    bytes[15] = 1;
+    return DeviceIdentifier(bytes);
+}
+
 int main() {
-    StatePublisher<Contract> publisher;
+    StatePublisher<Contract> publisher(Device());
+    ReentrantObserver observer;
+    observer.Publisher = &publisher;
+    auto handle = publisher.RegisterObserver(&observer);
+    assert(handle);
 
-    bool replacedDuringPublish = false;
-    assert(publisher.RegisterSource<SourceState>([&]() -> uint32_t {
-        replacedDuringPublish = true;
-        assert(publisher.RegisterSource<SourceState>([]() -> uint32_t {
-            return 22U;
-        }));
-        return 11U;
-    }));
+    uint32_t authoritative = 11U;
+    assert(publisher.Bind<SourceState>(authoritative));
 
-    // The source callback must execute without the publisher mutex held. Its
-    // synchronous source replacement must therefore complete, and the stale
-    // value produced by the replaced source must not be committed.
-    assert(!publisher.Publish<SourceState>());
-    assert(replacedDuringPublish);
+    // Lifecycle callbacks execute after registry mutation has committed and
+    // without a LocalStateRegistry lock being held, so read-only re-entry is safe.
+    assert(observer.Bound == 1);
+    assert(observer.SnapshotSucceededDuringBound);
 
-    assert(publisher.Publish<SourceState>());
-    StateUpdate<uint32_t> snapshot;
-    assert(publisher.Snapshot<SourceState>(snapshot));
-    assert(snapshot.Value == 22U);
+    authoritative = 22U;
+    StateRevision revision = 0;
+    assert(publisher.NotifyChanged<SourceState>(&revision));
+    assert(revision == 2);
 
-    bool removedDuringSnapshot = false;
-    assert(publisher.RegisterSource<SourceState>([&]() -> uint32_t {
-        removedDuringSnapshot = true;
-        assert(publisher.UnregisterSource<SourceState>());
-        return 33U;
-    }));
-
-    // Snapshot follows the same callback boundary and must reject a result
-    // whose pinned registration was removed while the source was executing.
-    assert(!publisher.Snapshot<SourceState>(snapshot));
-    assert(removedDuringSnapshot);
-    assert(!publisher.HasSource<SourceState>());
+    // Publication callbacks likewise execute outside registry mutation. A
+    // synchronous lifecycle transition can therefore complete without a lock cycle.
+    assert(observer.Published == 1);
+    assert(observer.UnboundDuringPublication);
+    assert(!publisher.Registration<SourceState>().Bound);
+    assert(publisher.Registration<SourceState>().Retained);
 
     return 0;
 }
