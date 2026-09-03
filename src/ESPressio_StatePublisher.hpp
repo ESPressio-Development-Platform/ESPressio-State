@@ -46,82 +46,54 @@ struct StatePublisherContractObserverRegistrar<StateContract<TDefinitions...>> {
 /// emits the immutable typed publication snapshot observed by transport/adapters. Binding/unbinding emits
 /// lifecycle and authoritative availability changes separately from value publication.
 ///
-/// Publication notification is serialized per State definition. A same-State NotifyChanged call made from
-/// inside a publication callback is accepted into a finite deferred queue and emitted only after the current
-/// notification has completed. Accepted revisions therefore remain non-reentrant and are observed in strict
-/// revision order. Queue exhaustion is explicit backpressure: the nested NotifyChanged call returns false
-/// before a new revision is committed.
+/// Publication notification is serialized per State definition. A same-State NotifyChanged made from inside
+/// a publication callback never recursively enters observers. Instead, one externally-preferred immutable
+/// latest snapshot is retained for that State and dispatched after the active notification returns. Additional
+/// same-State changes before that deferred snapshot is dispatched replace it with the newest revision. This is
+/// the bounded latest-fact coalescing permitted by State semantics; emitted revisions remain strictly ordered,
+/// while applications requiring every transition must use Event/stream semantics.
 /// </remarks>
 template<typename TContract, std::size_t TMaximumObservers = 8>
 class StatePublisher final {
     static_assert(TMaximumObservers > 0, "StatePublisher observer capacity must be non-zero");
-
-    /// <summary>Implementation bound for accepted same-State changes raised from inside notification.</summary>
-    static constexpr std::size_t DeferredNotificationCapacity = 4;
     static constexpr auto ExternalPreferred = System::Memory::MemoryPolicy::ExternalPreferred;
 
     class PublisherObservable final : public Observable::ThreadSafeObservable {
     public:
         void SourceBound(const StateAddress& address, StateEpoch epoch, StateRevision revision) {
             ExecuteNotification([&](NotificationContext& notification) {
-                notification.WithObservers<IStatePublisherObserver>(
-                    [&](IStatePublisherObserver* observer) {
-                        observer->OnStateSourceBound(address, epoch, revision);
-                    }
-                );
+                notification.WithObservers<IStatePublisherObserver>([&](IStatePublisherObserver* observer) {
+                    observer->OnStateSourceBound(address, epoch, revision);
+                });
             });
         }
 
-        void SourceUnbound(
-            const StateAddress& address,
-            StateUnbindMode mode,
-            StateEpoch epoch,
-            StateRevision revision
-        ) {
+        void SourceUnbound(const StateAddress& address, StateUnbindMode mode, StateEpoch epoch, StateRevision revision) {
             ExecuteNotification([&](NotificationContext& notification) {
-                notification.WithObservers<IStatePublisherObserver>(
-                    [&](IStatePublisherObserver* observer) {
-                        observer->OnStateSourceUnbound(address, mode, epoch, revision);
-                    }
-                );
+                notification.WithObservers<IStatePublisherObserver>([&](IStatePublisherObserver* observer) {
+                    observer->OnStateSourceUnbound(address, mode, epoch, revision);
+                });
             });
         }
 
-        void AvailabilityChanged(
-            const StateAddress& address,
-            StateAvailabilityStatus previous,
-            StateAvailabilityStatus current
-        ) {
+        void AvailabilityChanged(const StateAddress& address, StateAvailabilityStatus previous, StateAvailabilityStatus current) {
             ExecuteNotification([&](NotificationContext& notification) {
-                notification.WithObservers<IStatePublisherObserver>(
-                    [&](IStatePublisherObserver* observer) {
-                        observer->OnStateAvailabilityChanged(address, previous, current);
-                    }
-                );
+                notification.WithObservers<IStatePublisherObserver>([&](IStatePublisherObserver* observer) {
+                    observer->OnStateAvailabilityChanged(address, previous, current);
+                });
             });
         }
 
         template<typename TDefinition>
         void Published(const StateUpdate<StateValueType<TDefinition>>& update) {
-            const StateAddress address{
-                update.Header.Origin,
-                update.Header.TypeId
-            };
+            const StateAddress address{update.Header.Origin, update.Header.TypeId};
             ExecuteNotification([&](NotificationContext& notification) {
-                notification.WithObservers<IStatePublisherObserver>(
-                    [&](IStatePublisherObserver* observer) {
-                        observer->OnStatePublished(
-                            address,
-                            update.Header.Epoch,
-                            update.Header.Revision
-                        );
-                    }
-                );
-                notification.WithObservers<IStatePublishedObserver<TDefinition>>(
-                    [&](IStatePublishedObserver<TDefinition>* observer) {
-                        observer->OnStatePublished(StateTag<TDefinition>{}, update);
-                    }
-                );
+                notification.WithObservers<IStatePublisherObserver>([&](IStatePublisherObserver* observer) {
+                    observer->OnStatePublished(address, update.Header.Epoch, update.Header.Revision);
+                });
+                notification.WithObservers<IStatePublishedObserver<TDefinition>>([&](IStatePublishedObserver<TDefinition>* observer) {
+                    observer->OnStatePublished(StateTag<TDefinition>{}, update);
+                });
             });
         }
     };
@@ -129,10 +101,8 @@ class StatePublisher final {
     template<typename TDefinition>
     struct NotificationState final {
         using Update = StateUpdate<StateValueType<TDefinition>>;
-        using Queue = System::Memory::Vector<Update, ExternalPreferred>;
-
         bool Dispatching = false;
-        Queue Deferred{};
+        std::shared_ptr<Update> PendingLatest;
     };
 
     template<typename T>
@@ -154,10 +124,7 @@ class StatePublisher final {
         std::lock_guard<System::Synchronization::RecursiveMutex> lock(_observableMutex);
         if (_observable) return _observable;
         try {
-            _observable = System::Memory::MakeShared<
-                PublisherObservable,
-                ExternalPreferred
-            >();
+            _observable = System::Memory::MakeShared<PublisherObservable, ExternalPreferred>();
         } catch (...) {
             return {};
         }
@@ -185,38 +152,30 @@ class StatePublisher final {
     }
 
     template<typename TDefinition>
-    bool EnsureDeferredCapacityLocked(NotificationState<TDefinition>& state) {
-        if (state.Deferred.capacity() >= DeferredNotificationCapacity) return true;
-        try {
-            state.Deferred.reserve(DeferredNotificationCapacity);
-            return true;
-        } catch (...) {
-            return false;
-        }
-    }
-
-    template<typename TDefinition>
     void DispatchSerialized(StateUpdate<StateValueType<TDefinition>> update) {
-        auto observable = ObservableSnapshot();
-        if (observable) observable->template Published<TDefinition>(update);
-
-        while (true) {
-            bool haveNext = false;
-            {
-                std::lock_guard<System::Synchronization::RecursiveMutex> lock(_publicationMutex);
-                auto& state = GetNotificationState<TDefinition>();
-                if (state.Deferred.empty()) {
-                    state.Dispatching = false;
-                    return;
-                }
-                update = std::move(state.Deferred.front());
-                state.Deferred.erase(state.Deferred.begin());
-                haveNext = true;
-            }
-            if (haveNext) {
-                observable = ObservableSnapshot();
+        try {
+            while (true) {
+                auto observable = ObservableSnapshot();
                 if (observable) observable->template Published<TDefinition>(update);
+
+                std::shared_ptr<StateUpdate<StateValueType<TDefinition>>> pending;
+                {
+                    std::lock_guard<System::Synchronization::RecursiveMutex> lock(_publicationMutex);
+                    auto& state = GetNotificationState<TDefinition>();
+                    pending = std::move(state.PendingLatest);
+                    if (!pending) {
+                        state.Dispatching = false;
+                        return;
+                    }
+                }
+                update = std::move(*pending);
             }
+        } catch (...) {
+            std::lock_guard<System::Synchronization::RecursiveMutex> lock(_publicationMutex);
+            auto& state = GetNotificationState<TDefinition>();
+            state.PendingLatest.reset();
+            state.Dispatching = false;
+            throw;
         }
     }
 
@@ -232,12 +191,8 @@ public:
     /// <summary>Maximum number of simultaneous observer registrations accepted by this publisher.</summary>
     static constexpr std::size_t MaximumObservers = TMaximumObservers;
 
-    /// <summary>Maximum accepted same-State notifications deferred behind one active notification.</summary>
-    static constexpr std::size_t MaximumDeferredNotificationsPerState = DeferredNotificationCapacity;
-
     /// <summary>Creates a publisher for one permanent authoritative device identity.</summary>
-    explicit StatePublisher(const DeviceIdentifier& origin = DeviceIdentifier{})
-        : _origin(origin) {}
+    explicit StatePublisher(const DeviceIdentifier& origin = DeviceIdentifier{}) : _origin(origin) {}
 
     /// <summary>Returns the permanent device identity carried by this publisher's State addresses.</summary>
     const DeviceIdentifier& Origin() const noexcept { return _origin; }
@@ -255,18 +210,13 @@ public:
     Observable::ObserverHandlePtr RegisterContractObserver(TObserver* observer) {
         if (observer == nullptr) return {};
         return RegisterBounded([&](PublisherObservable& observable) {
-            return StatePublisherContractObserverRegistrar<TContract>::Register(
-                observable,
-                observer
-            );
+            return StatePublisherContractObserverRegistrar<TContract>::Register(observable, observer);
         });
     }
 
     /// <summary>Registers one typed publication observer when bounded observer capacity remains.</summary>
     template<typename TDefinition>
-    Observable::ObserverHandlePtr RegisterPublishedObserver(
-        IStatePublishedObserver<TDefinition>* observer
-    ) {
+    Observable::ObserverHandlePtr RegisterPublishedObserver(IStatePublishedObserver<TDefinition>* observer) {
         static_assert(TContract::template Contains<TDefinition>, "State definition is not part of this StateContract");
         if (observer == nullptr) return {};
         return RegisterBounded([&](PublisherObservable& observable) {
@@ -283,6 +233,7 @@ public:
     /// <summary>Binds one application-owned value as the sole local authority for the State definition.</summary>
     template<typename TDefinition>
     bool Bind(StateValueType<TDefinition>& source) {
+        std::lock_guard<System::Synchronization::RecursiveMutex> publicationLock(_publicationMutex);
         if (!_origin) return false;
         if (!_registry.template Bind<TDefinition>(source)) return false;
 
@@ -296,73 +247,67 @@ public:
         return true;
     }
 
-    /// <summary>
-    /// Removes one bound source while preserving or discarding its registration lineage according to mode.
-    /// </summary>
+    /// <summary>Removes one bound source while preserving or discarding its registration lineage according to mode.</summary>
     template<typename TDefinition>
     bool Unbind(StateUnbindMode mode) {
+        std::lock_guard<System::Synchronization::RecursiveMutex> publicationLock(_publicationMutex);
         const auto before = _registry.template Registration<TDefinition>();
         if (!before.Bound) return false;
         if (!_registry.template Unbind<TDefinition>(mode)) return false;
+
+        auto& notificationState = GetNotificationState<TDefinition>();
+        notificationState.PendingLatest.reset();
 
         auto observable = ObservableSnapshot();
         if (observable) {
             const auto address = MakeStateAddress<TDefinition>(_origin);
             observable->AvailabilityChanged(address, AvailableStatus(), UnboundStatus());
-            observable->SourceUnbound(
-                address,
-                mode,
-                before.Epoch,
-                before.Revision
-            );
+            observable->SourceUnbound(address, mode, before.Epoch, before.Revision);
         }
         return true;
     }
 
-    /// <summary>
-    /// Advances the local registration revision and synchronously publishes the current authoritative value.
-    /// </summary>
+    /// <summary>Advances the local registration revision and synchronously publishes the current authoritative value.</summary>
     /// <remarks>
-    /// This is the authoritative mutation boundary. Equality is deliberately not re-evaluated here: the caller has
-    /// explicitly declared that the State changed. The value is copied once into the immutable StateUpdate snapshot
-    /// emitted to observers; the application-owned source remains the canonical local value. If the same State is
-    /// already notifying, the immutable snapshot is queued behind it. If that finite queue is full, this call returns
-    /// false before advancing the registration revision, providing deterministic backpressure without losing an
-    /// already-committed revision.
+    /// Equality is deliberately not re-evaluated here: the caller has explicitly declared a semantic change.
+    /// The source value is copied before the revision commit, so a failed value copy or deferred-storage
+    /// allocation cannot consume a revision. Reentrant same-State notifications retain at most one latest
+    /// immutable pending snapshot; later accepted changes replace it and therefore coalesce obsolete revisions.
     /// </remarks>
     template<typename TDefinition>
     bool NotifyChanged(StateRevision* committedRevision = nullptr) {
-        StateUpdate<StateValueType<TDefinition>> update;
+        using Update = StateUpdate<StateValueType<TDefinition>>;
+        Update prepared;
         bool dispatchNow = false;
         StateRevision revision = 0;
+        std::shared_ptr<Update> deferred;
 
         {
             std::lock_guard<System::Synchronization::RecursiveMutex> publicationLock(_publicationMutex);
             auto& notificationState = GetNotificationState<TDefinition>();
 
-            if (notificationState.Dispatching) {
-                if (!EnsureDeferredCapacityLocked(notificationState)) return false;
-                if (notificationState.Deferred.size() >= DeferredNotificationCapacity) return false;
-            }
+            LocalStateView<TDefinition> before;
+            if (!_registry.template Read<TDefinition>(before)) return false;
 
-            if (!_registry.template NotifyChanged<TDefinition>(revision)) return false;
-
-            LocalStateView<TDefinition> view;
-            if (!_registry.template Read<TDefinition>(view)) return false;
-            if (view.Revision != revision) return false;
-
-            update.Header.Origin = _origin;
-            update.Header.TypeId = StateTypeIdOf<TDefinition>;
-            update.Header.Epoch = view.Epoch;
-            update.Header.Revision = view.Revision;
-            update.Value = view.ValueRef();
+            prepared.Header.Origin = _origin;
+            prepared.Header.TypeId = StateTypeIdOf<TDefinition>;
+            prepared.Header.Epoch = before.Epoch;
+            prepared.Value = before.ValueRef();
 
             if (notificationState.Dispatching) {
                 try {
-                    notificationState.Deferred.push_back(std::move(update));
+                    deferred = System::Memory::MakeShared<Update, ExternalPreferred>(prepared);
                 } catch (...) {
                     return false;
                 }
+            }
+
+            if (!_registry.template NotifyChanged<TDefinition>(revision)) return false;
+            prepared.Header.Revision = revision;
+
+            if (notificationState.Dispatching) {
+                deferred->Header.Revision = revision;
+                notificationState.PendingLatest = std::move(deferred);
             } else {
                 notificationState.Dispatching = true;
                 dispatchNow = true;
@@ -370,7 +315,7 @@ public:
         }
 
         if (committedRevision != nullptr) *committedRevision = revision;
-        if (dispatchNow) DispatchSerialized<TDefinition>(std::move(update));
+        if (dispatchNow) DispatchSerialized<TDefinition>(std::move(prepared));
         return true;
     }
 
@@ -386,11 +331,10 @@ public:
         return _registry.template Registration<TDefinition>();
     }
 
-    /// <summary>
-    /// Captures the current authoritative value for subscription establishment or resynchronization without advancing revision.
-    /// </summary>
+    /// <summary>Captures the current authoritative value for subscription establishment or resynchronization without advancing revision.</summary>
     template<typename TDefinition>
     bool Snapshot(StateUpdate<StateValueType<TDefinition>>& update) const {
+        std::lock_guard<System::Synchronization::RecursiveMutex> publicationLock(_publicationMutex);
         LocalStateView<TDefinition> view;
         if (!_registry.template Read<TDefinition>(view)) return false;
         if (view.Revision == 0 || !_origin) return false;
