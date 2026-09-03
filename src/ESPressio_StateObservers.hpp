@@ -13,6 +13,7 @@ namespace ESPressio {
 namespace State {
 
 enum class StateSubscriptionScope : uint8_t;
+enum class StateUnbindMode : uint8_t;
 template<typename TValue> struct StateUpdate;
 
 /// <summary>Observes registration, replica acceptance/rejection, State availability, and source reachability.</summary>
@@ -74,12 +75,22 @@ public:
     virtual void OnRemoteStateSubscriberCapacityExhausted(const DeviceIdentifier&, StateTypeId) {}
 };
 
+/// <summary>Observes local authoritative State binding, availability and publication lifecycle.</summary>
 class IStatePublisherObserver : public Observable::IObserver {
 public:
     virtual ~IStatePublisherObserver() = default;
-    virtual void OnStateSourceRegistered(StateTypeId) {}
-    virtual void OnStateSourceUnregistered(StateTypeId) {}
-    virtual void OnStatePublished(StateTypeId, StateEpoch, StateRevision) {}
+
+    /// <summary>Called after an application-owned source becomes the active local authority.</summary>
+    virtual void OnStateSourceBound(const StateAddress&, StateEpoch, StateRevision) {}
+
+    /// <summary>Called after the active local source is removed.</summary>
+    virtual void OnStateSourceUnbound(const StateAddress&, StateUnbindMode, StateEpoch, StateRevision) {}
+
+    /// <summary>Called when local authoritative availability changes independently of value publication.</summary>
+    virtual void OnStateAvailabilityChanged(const StateAddress&, StateAvailabilityStatus, StateAvailabilityStatus) {}
+
+    /// <summary>Called after an explicit authoritative change has committed a new State revision.</summary>
+    virtual void OnStatePublished(const StateAddress&, StateEpoch, StateRevision) {}
 };
 
 template<typename TDefinition>
