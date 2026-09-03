@@ -40,26 +40,68 @@ public:
 
 class ReentrantSubscriptionObserver final : public IStateSubscriptionRegistryObserver {
 public:
-    StateSubscriptionRegistry<3>* Registry = nullptr; DeviceIdentifier ProbeDevice{}; bool SawSubscribedState = false; bool SawUnsubscribedState = false;
-    void OnStateSubscribed(StateTypeId typeId, StateSubscriptionScope, const DeviceIdentifier&) override { SawSubscribedState = Registry->IsSubscribed(ProbeDevice, typeId); assert(Registry->Count() > 0); }
-    void OnStateUnsubscribed(StateTypeId typeId, StateSubscriptionScope, const DeviceIdentifier&) override { SawUnsubscribedState = !Registry->IsSubscribed(ProbeDevice, typeId); }
+    StateSubscriptionRegistry<3>* Registry = nullptr;
+    DeviceIdentifier ProbeDevice{};
+    bool SawSubscribedState = false;
+    bool SawUnsubscribedState = false;
+    void OnStateSubscribed(StateTypeId typeId, StateSubscriptionScope, const DeviceIdentifier&) override {
+        SawSubscribedState = Registry->IsSubscribed(ProbeDevice, typeId);
+        assert(Registry->Count() > 0);
+    }
+    void OnStateUnsubscribed(StateTypeId typeId, StateSubscriptionScope, const DeviceIdentifier&) override {
+        SawUnsubscribedState = !Registry->IsSubscribed(ProbeDevice, typeId);
+    }
 };
 
+class EmptyRemoteObserver final : public IRemoteStateManagerObserver {};
+class EmptySubscriptionObserver final : public IStateSubscriptionRegistryObserver {};
+class EmptySubscriberObserver final : public IStateSubscriberRegistryObserver {};
+
 static DeviceIdentifier MakeDevice(uint8_t discriminator) {
-    DeviceIdentifier::Storage bytes{}; bytes[15] = discriminator; return DeviceIdentifier(bytes);
+    DeviceIdentifier::Storage bytes{};
+    bytes[15] = discriminator;
+    return DeviceIdentifier(bytes);
 }
 
 int main() {
     static_assert(Contract::StateCount == 3);
     static_assert(Contract::IndexOf<FrontGyroscope>() == 0);
-    const auto device = MakeDevice(1); const auto otherDevice = MakeDevice(2);
+    const auto device = MakeDevice(1);
+    const auto otherDevice = MakeDevice(2);
     assert(device && otherDevice && device != otherDevice);
+
+    // Observer capacities are independent of data capacities and are released
+    // deterministically when the corresponding RAII handle is destroyed.
+    EmptyRemoteObserver remoteObserverA, remoteObserverB;
+    RemoteStateManager<Contract, 1, 1> boundedManager;
+    auto boundedManagerHandle = boundedManager.RegisterObserver(&remoteObserverA);
+    assert(boundedManagerHandle);
+    assert(!boundedManager.RegisterObserver(&remoteObserverB));
+    boundedManagerHandle.reset();
+    assert(boundedManager.RegisterObserver(&remoteObserverB));
+
+    EmptySubscriptionObserver subscriptionObserverA, subscriptionObserverB;
+    StateSubscriptionRegistry<1, 1> boundedSubscriptions;
+    auto boundedSubscriptionHandle = boundedSubscriptions.RegisterObserver(&subscriptionObserverA);
+    assert(boundedSubscriptionHandle);
+    assert(!boundedSubscriptions.RegisterObserver(&subscriptionObserverB));
+    boundedSubscriptionHandle.reset();
+    assert(boundedSubscriptions.RegisterObserver(&subscriptionObserverB));
+
+    EmptySubscriberObserver subscriberObserverA, subscriberObserverB;
+    StateSubscriberRegistry<Contract, 1, 1> boundedSubscribers;
+    auto boundedSubscriberHandle = boundedSubscribers.RegisterObserver(&subscriberObserverA);
+    assert(boundedSubscriberHandle);
+    assert(!boundedSubscribers.RegisterObserver(&subscriberObserverB));
+    boundedSubscriberHandle.reset();
+    assert(boundedSubscribers.RegisterObserver(&subscriberObserverB));
 
     StateObserver observer;
     RemoteStateManager<Contract, 2> manager;
     auto managerHandle = manager.RegisterObserver(static_cast<IRemoteStateManagerObserver*>(&observer));
     assert(manager.Apply<FrontGyroscope>(device, 1, 1, {1,2,3}));
-    RemoteStateSnapshot<GyroscopeData> front; assert(manager.Read<FrontGyroscope>(device, front));
+    RemoteStateSnapshot<GyroscopeData> front;
+    assert(manager.Read<FrontGyroscope>(device, front));
     assert(manager.Apply<RearGyroscope>(device, 1, 1, {4,5,6}));
     assert(manager.Apply<FrontGyroscope>(device, 1, 2, {1,2,3}));
     assert(!manager.Apply<FrontGyroscope>(device, 1, 2, {9,9,9}));
@@ -67,17 +109,22 @@ int main() {
 
     StateSubscriptionRegistry<3> subscriptions;
     auto subscriptionHandle = subscriptions.RegisterObserver(static_cast<IStateSubscriptionRegistryObserver*>(&observer));
-    ReentrantSubscriptionObserver reentrantObserver; reentrantObserver.Registry = &subscriptions; reentrantObserver.ProbeDevice = otherDevice;
+    ReentrantSubscriptionObserver reentrantObserver;
+    reentrantObserver.Registry = &subscriptions;
+    reentrantObserver.ProbeDevice = otherDevice;
     auto reentrantHandle = subscriptions.RegisterObserver(&reentrantObserver);
-    assert(subscriptions.Subscribe<FrontGyroscope>()); assert(subscriptions.Subscribe<RearGyroscope>(StateSubscription<RearGyroscope>::From(device)));
-    assert(subscriptions.IsSubscribed<FrontGyroscope>(otherDevice)); assert(!subscriptions.IsSubscribed<RearGyroscope>(otherDevice));
+    assert(subscriptions.Subscribe<FrontGyroscope>());
+    assert(subscriptions.Subscribe<RearGyroscope>(StateSubscription<RearGyroscope>::From(device)));
+    assert(subscriptions.IsSubscribed<FrontGyroscope>(otherDevice));
+    assert(!subscriptions.IsSubscribed<RearGyroscope>(otherDevice));
     assert(subscriptions.Unsubscribe<FrontGyroscope>());
 
     StateSubscriberRegistry<Contract, 2> remoteSubscribers;
     auto remoteSubscriberHandle = remoteSubscribers.RegisterObserver(static_cast<IStateSubscriberRegistryObserver*>(&observer));
     assert(remoteSubscribers.Subscribe(otherDevice, StateTypeIdOf<FrontGyroscope>));
     assert(remoteSubscribers.Unsubscribe(otherDevice, StateTypeIdOf<FrontGyroscope>));
-    assert(remoteSubscribers.Subscribe(otherDevice, StateTypeIdOf<RearGyroscope>)); assert(remoteSubscribers.Remove(otherDevice));
+    assert(remoteSubscribers.Subscribe(otherDevice, StateTypeIdOf<RearGyroscope>));
+    assert(remoteSubscribers.Remove(otherDevice));
 
     GyroscopeData authoritative{20,21,22};
     StatePublisher<Contract, 2> publisher(device);
@@ -85,6 +132,9 @@ int main() {
     auto frontPublisherHandle = publisher.RegisterPublishedObserver<FrontGyroscope>(static_cast<IStatePublishedObserver<FrontGyroscope>*>(&observer));
     assert(publisherHandle && frontPublisherHandle);
     assert(!publisher.RegisterPublishedObserver<RearGyroscope>(static_cast<IStatePublishedObserver<RearGyroscope>*>(&observer)));
+    frontPublisherHandle.reset();
+    auto rearPublisherHandle = publisher.RegisterPublishedObserver<RearGyroscope>(static_cast<IStatePublishedObserver<RearGyroscope>*>(&observer));
+    assert(rearPublisherHandle);
 
     assert(publisher.Bind<FrontGyroscope>(authoritative));
     auto localRegistration = publisher.Registration<FrontGyroscope>();
@@ -99,7 +149,8 @@ int main() {
     StateRevision committedRevision = 0;
     assert(publisher.NotifyChanged<FrontGyroscope>(&committedRevision));
     assert(committedRevision == 2);
-    assert(observer.Published == 1 && observer.FrontPublished == 1);
+    assert(observer.Published == 1);
+    assert(observer.FrontPublished == 0); // typed Front observer was deliberately released above.
 
     assert(publisher.Unbind<FrontGyroscope>(StateUnbindMode::Retain));
     assert(observer.SourcesBound == 1 && observer.SourcesUnbound == 1);
@@ -114,6 +165,7 @@ int main() {
     assert(tracker.Replace(1, 1, {1,1,1}));
     assert(tracker.Replace(1, 2, {2,2,2}));
     assert(tracker.PendingUpdate().Pending && tracker.PendingUpdate().Revision == 2);
-    tracker.Clear(); assert(!tracker.PendingUpdate().Pending);
+    tracker.Clear();
+    assert(!tracker.PendingUpdate().Pending);
     return 0;
 }
