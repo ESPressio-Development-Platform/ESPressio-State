@@ -62,6 +62,14 @@ int main() {
     assert(decodedAvailability.Reason == StateAvailabilityReason::SourceUnbound);
     assert(!StateProtocol::DecodeControl(buffer.data(), size, decoded));
 
+    const StateProtocol::AvailabilityMessage reachabilityDerived{
+        device,
+        TestState::Id,
+        StateAvailability::Unavailable,
+        StateAvailabilityReason::SourceUnreachable
+    };
+    assert(!StateProtocol::EncodeAvailability(reachabilityDerived, buffer.data(), buffer.size(), size));
+
     StateUpdate<uint32_t> publication{};
     publication.Header.Origin = device;
     publication.Header.TypeId = TestState::Id;
