@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <memory>
 #include <mutex>
@@ -20,7 +21,6 @@
 namespace ESPressio {
 namespace State {
 
-/// <summary>Read-only snapshot of one known remote device and its current transport-independent reachability.</summary>
 struct RemoteDeviceSnapshot {
     DeviceIdentifier Identifier{};
     StateSourceReachability Reachability = StateSourceReachability::Unknown;
@@ -34,6 +34,7 @@ struct RemoteStateSlot {
     StateAvailability AuthoritativeAvailability = StateAvailability::Unavailable;
     StateAvailabilityReason AuthoritativeReason = StateAvailabilityReason::SourceUnbound;
     bool HasValue = false;
+    bool HasAvailability = false;
 };
 
 template<typename TValue>
@@ -55,12 +56,9 @@ struct RemoteStateTuple<StateContract<TDefinitions...>> {
 };
 
 /// <summary>Maintains bounded typed State replicas and source reachability for remote devices.</summary>
-/// <typeparam name="TContract">State contract accepted by the manager.</typeparam>
-/// <typeparam name="TMaximumDevices">Maximum number of remote devices retained simultaneously.</typeparam>
 /// <remarks>
-/// Value availability belongs to each State identity and is distinct from device
-/// reachability. Read operations return the effective availability obtained by
-/// combining the source-authoritative State status with current reachability.
+/// Authoritative State availability and device reachability are stored separately.
+/// Every read and availability notification exposes their effective combination.
 /// </remarks>
 template<typename TContract, std::size_t TMaximumDevices>
 class RemoteStateManager final {
@@ -78,7 +76,6 @@ private:
                 });
             });
         }
-
         void StateAccepted(const DeviceIdentifier& identifier, StateTypeId typeId, StateEpoch epoch, StateRevision revision, bool changed) {
             ExecuteNotification([&](NotificationContext& notification) {
                 notification.WithObservers<IRemoteStateManagerObserver>([&](IRemoteStateManagerObserver* observer) {
@@ -86,7 +83,6 @@ private:
                 });
             });
         }
-
         void StateRejected(const DeviceIdentifier& identifier, StateTypeId typeId, StateEpoch epoch, StateRevision revision) {
             ExecuteNotification([&](NotificationContext& notification) {
                 notification.WithObservers<IRemoteStateManagerObserver>([&](IRemoteStateManagerObserver* observer) {
@@ -94,7 +90,6 @@ private:
                 });
             });
         }
-
         void ReachabilityChanged(const DeviceIdentifier& identifier, StateSourceReachability previous, StateSourceReachability current) {
             ExecuteNotification([&](NotificationContext& notification) {
                 notification.WithObservers<IRemoteStateManagerObserver>([&](IRemoteStateManagerObserver* observer) {
@@ -102,7 +97,6 @@ private:
                 });
             });
         }
-
         void StateAvailabilityChanged(const StateAddress& address, StateAvailabilityStatus previous, StateAvailabilityStatus current) {
             ExecuteNotification([&](NotificationContext& notification) {
                 notification.WithObservers<IRemoteStateManagerObserver>([&](IRemoteStateManagerObserver* observer) {
@@ -118,8 +112,16 @@ private:
         typename RemoteStateTuple<TContract>::Type States{};
     };
 
+    struct AvailabilityTransition {
+        StateAddress Address{};
+        StateAvailabilityStatus Previous{};
+        StateAvailabilityStatus Current{};
+        bool Active = false;
+    };
+
     using DeviceStorage = System::Memory::Vector<DeviceRecord, System::Memory::MemoryPolicy::ExternalPreferred>;
     using SnapshotStorage = System::Memory::Vector<RemoteDeviceSnapshot, System::Memory::MemoryPolicy::ExternalPreferred>;
+    using TransitionStorage = std::array<AvailabilityTransition, TContract::StateCount>;
 
     mutable DeviceStorage _devices;
     mutable System::Synchronization::RecursiveMutex _mutex;
@@ -133,21 +135,17 @@ private:
                 _observable = System::Memory::MakeShared<ManagerObservable, System::Memory::MemoryPolicy::ExternalPreferred>();
             }
             return static_cast<bool>(_observable);
-        } catch (...) {
-            return false;
-        }
+        } catch (...) { return false; }
     }
 
     DeviceRecord* FindLocked(const DeviceIdentifier& identifier) {
         for (auto& device : _devices) if (device.Identifier == identifier) return &device;
         return nullptr;
     }
-
     const DeviceRecord* FindLocked(const DeviceIdentifier& identifier) const {
         for (const auto& device : _devices) if (device.Identifier == identifier) return &device;
         return nullptr;
     }
-
     DeviceRecord* FindOrCreateLocked(const DeviceIdentifier& identifier, bool& created) {
         created = false;
         if (identifier.IsZero()) return nullptr;
@@ -165,16 +163,46 @@ private:
         return ResolveEffectiveStateAvailability(slot.AuthoritativeAvailability, slot.AuthoritativeReason, device.Reachability);
     }
 
+    template<std::size_t TIndex = 0>
+    static void CaptureReachabilityTransitions(
+        const DeviceRecord& device,
+        StateSourceReachability previousReachability,
+        StateSourceReachability currentReachability,
+        TransitionStorage& transitions
+    ) {
+        if constexpr (TIndex < TContract::StateCount) {
+            using Definition = typename std::tuple_element<TIndex, typename TContract::Definitions>::type;
+            const auto& slot = std::get<TIndex>(device.States);
+            if (slot.HasValue || slot.HasAvailability) {
+                const auto previous = ResolveEffectiveStateAvailability(
+                    slot.AuthoritativeAvailability,
+                    slot.AuthoritativeReason,
+                    previousReachability
+                );
+                const auto current = ResolveEffectiveStateAvailability(
+                    slot.AuthoritativeAvailability,
+                    slot.AuthoritativeReason,
+                    currentReachability
+                );
+                if (previous != current) {
+                    transitions[TIndex] = {
+                        MakeStateAddress<Definition>(device.Identifier),
+                        previous,
+                        current,
+                        true
+                    };
+                }
+            }
+            CaptureReachabilityTransitions<TIndex + 1>(device, previousReachability, currentReachability, transitions);
+        }
+    }
+
     template<typename TDefinition, typename TValue>
     bool ApplyValue(const DeviceIdentifier& identifier, StateEpoch epoch, StateRevision revision, TValue&& value) {
         static_assert(TContract::template Contains<TDefinition>, "State definition is not part of this StateContract");
         if (!EnsureRuntimeStorage()) return false;
-
-        bool created = false;
-        bool changed = false;
-        bool accepted = false;
-        StateAvailabilityStatus previousAvailability{};
-        StateAvailabilityStatus currentAvailability{};
+        bool created = false, changed = false, accepted = false;
+        StateAvailabilityStatus previousAvailability{}, currentAvailability{};
         {
             std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
             auto* device = FindOrCreateLocked(identifier, created);
@@ -187,6 +215,7 @@ private:
                     slot.Epoch = epoch;
                     slot.Revision = revision;
                     slot.HasValue = true;
+                    slot.HasAvailability = true;
                     slot.AuthoritativeAvailability = StateAvailability::Available;
                     slot.AuthoritativeReason = StateAvailabilityReason::None;
                     currentAvailability = EffectiveAvailability<TDefinition>(*device);
@@ -194,7 +223,6 @@ private:
                 }
             }
         }
-
         if (created) _observable->DeviceRegistered(identifier);
         if (!accepted) {
             _observable->StateRejected(identifier, StateTypeIdOf<TDefinition>, epoch, revision);
@@ -214,7 +242,6 @@ public:
         if (!EnsureRuntimeStorage()) return {};
         return _observable->template RegisterObserverAs<IRemoteStateManagerObserver>(observer);
     }
-
     void UnregisterObserver(Observable::IObserver* observer) {
         if (!EnsureRuntimeStorage()) return;
         _observable->UnregisterObserver(observer);
@@ -241,7 +268,6 @@ public:
     bool Apply(const DeviceIdentifier& identifier, StateEpoch epoch, StateRevision revision, const StateValueType<TDefinition>& value) {
         return ApplyValue<TDefinition>(identifier, epoch, revision, value);
     }
-
     template<typename TDefinition>
     bool Apply(const DeviceIdentifier& identifier, StateEpoch epoch, StateRevision revision, StateValueType<TDefinition>&& value) {
         return ApplyValue<TDefinition>(identifier, epoch, revision, std::move(value));
@@ -252,8 +278,7 @@ public:
         static_assert(TContract::template Contains<TDefinition>, "State definition is not part of this StateContract");
         if (!EnsureRuntimeStorage()) return false;
         bool created = false;
-        StateAvailabilityStatus previous{};
-        StateAvailabilityStatus current{};
+        StateAvailabilityStatus previous{}, current{};
         {
             std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
             auto* device = FindOrCreateLocked(identifier, created);
@@ -262,6 +287,7 @@ public:
             previous = EffectiveAvailability<TDefinition>(*device);
             slot.AuthoritativeAvailability = availability;
             slot.AuthoritativeReason = reason;
+            slot.HasAvailability = true;
             current = EffectiveAvailability<TDefinition>(*device);
         }
         if (created) _observable->DeviceRegistered(identifier);
@@ -271,19 +297,29 @@ public:
 
     bool SetReachability(const DeviceIdentifier& identifier, StateSourceReachability reachability) {
         if (!EnsureRuntimeStorage()) return false;
-        bool created = false;
+        bool created = false, changed = false;
         StateSourceReachability previous = StateSourceReachability::Unknown;
-        bool changed = false;
+        TransitionStorage transitions{};
         {
             std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
             auto* device = FindOrCreateLocked(identifier, created);
             if (device == nullptr) return false;
             previous = device->Reachability;
             changed = previous != reachability;
-            device->Reachability = reachability;
+            if (changed) {
+                CaptureReachabilityTransitions(*device, previous, reachability, transitions);
+                device->Reachability = reachability;
+            }
         }
         if (created) _observable->DeviceRegistered(identifier);
-        if (changed) _observable->ReachabilityChanged(identifier, previous, reachability);
+        if (changed) {
+            _observable->ReachabilityChanged(identifier, previous, reachability);
+            for (const auto& transition : transitions) {
+                if (transition.Active) {
+                    _observable->StateAvailabilityChanged(transition.Address, transition.Previous, transition.Current);
+                }
+            }
+        }
         return true;
     }
 
