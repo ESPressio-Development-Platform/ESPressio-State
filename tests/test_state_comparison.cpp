@@ -1,34 +1,87 @@
 #include <cassert>
-#include <cstdint>
 #include <cmath>
+#include <cstdint>
 
 #include <ESPressio_State.hpp>
+
 using namespace ESPressio::State;
 
-struct AnalogValue { float Value = 0.0f; bool operator==(const AnalogValue& other) const { return Value == other.Value; } };
-struct ExactAnalogState { using Value = AnalogValue; static constexpr StateTypeId Id = 1; };
-struct DeadbandAnalogState { using Value = AnalogValue; static constexpr StateTypeId Id = 2; };
+struct AnalogValue {
+    float Value = 0.0f;
+    bool operator==(const AnalogValue& other) const { return Value == other.Value; }
+};
 
-template<> struct ESPressio::State::StateComparison<ExactAnalogState> {
-    static bool Equals(const AnalogValue& left, const AnalogValue& right) { return left.Value == right.Value; }
+struct ExactAnalogState {
+    using Value = AnalogValue;
+    static constexpr StateTypeId Id = 1;
 };
-template<> struct ESPressio::State::StateComparison<DeadbandAnalogState> {
-    static bool Equals(const AnalogValue& left, const AnalogValue& right) { return std::fabs(left.Value - right.Value) < 0.5f; }
+
+struct DeadbandAnalogState {
+    using Value = AnalogValue;
+    static constexpr StateTypeId Id = 2;
 };
+
+template<>
+struct ESPressio::State::StateComparison<ExactAnalogState> {
+    static bool Equals(const AnalogValue& left, const AnalogValue& right) {
+        return left.Value == right.Value;
+    }
+};
+
+template<>
+struct ESPressio::State::StateComparison<DeadbandAnalogState> {
+    static bool Equals(const AnalogValue& left, const AnalogValue& right) {
+        return std::fabs(left.Value - right.Value) < 0.5f;
+    }
+};
+
 using Contract = StateContract<ExactAnalogState, DeadbandAnalogState>;
 
-class PublisherObserver final : public IStatePublisherObserver { public: int Published=0; void OnStatePublished(StateTypeId,StateEpoch,StateRevision) override { ++Published; } };
-class ComparisonObserver final : public IRemoteStateManagerObserver { public: int Accepted=0,Changed=0; void OnRemoteStateAccepted(const DeviceIdentifier&,StateTypeId,StateEpoch,StateRevision,bool changed) override { ++Accepted; if(changed) ++Changed; } };
+class PublisherObserver final : public IStatePublisherObserver {
+public:
+    int Published = 0;
+    void OnStatePublished(const StateAddress&, StateEpoch, StateRevision) override {
+        ++Published;
+    }
+};
 
-int main(){
-    DeviceIdentifier::Storage identity{}; identity[15]=1; const DeviceIdentifier device(identity);
-    StatePublisher<Contract> publisher(device); PublisherObserver po; auto ph=publisher.RegisterObserver(&po);
-    AnalogValue authoritative{100.0f}; assert(publisher.RegisterSource<DeadbandAnalogState>([&]{return authoritative;}));
-    assert(publisher.Publish<DeadbandAnalogState>()); assert(po.Published==1);
-    authoritative={100.2f}; assert(publisher.Publish<DeadbandAnalogState>()); assert(po.Published==1);
-    authoritative={101.0f}; assert(publisher.Publish<DeadbandAnalogState>()); assert(po.Published==2);
-    authoritative={102.0f}; assert(publisher.Publish<DeadbandAnalogState>()); assert(po.Published==3);
-    RemoteStateManager<Contract,1> manager; ComparisonObserver observer; auto h=manager.RegisterObserver(static_cast<IRemoteStateManagerObserver*>(&observer));
-    assert(manager.Apply<DeadbandAnalogState>(device,1,1,{100.0f})); assert(manager.Apply<DeadbandAnalogState>(device,1,2,{100.2f})); assert(manager.Apply<DeadbandAnalogState>(device,1,3,{101.0f})); assert(observer.Accepted==3 && observer.Changed==3);
+int main() {
+    DeviceIdentifier::Storage identity{};
+    identity[15] = 1;
+    const DeviceIdentifier device(identity);
+
+    // StateComparison remains an application/domain decision helper. It does
+    // not create a shadow copy inside reference-backed State publication.
+    const AnalogValue baseline{100.0f};
+    assert(!StateValueChanged<DeadbandAnalogState>(baseline, {100.2f}));
+    assert(StateValueChanged<DeadbandAnalogState>(baseline, {101.0f}));
+    assert(StateValueChanged<ExactAnalogState>(baseline, {100.2f}));
+
+    StatePublisher<Contract> publisher(device);
+    PublisherObserver observer;
+    auto handle = publisher.RegisterObserver(&observer);
+    assert(handle);
+
+    AnalogValue authoritative{100.0f};
+    assert(publisher.Bind<DeadbandAnalogState>(authoritative));
+
+    // The application can suppress semantically equivalent mutation before
+    // calling NotifyChanged.
+    const AnalogValue candidate{100.2f};
+    if (StateValueChanged<DeadbandAnalogState>(authoritative, candidate)) {
+        authoritative = candidate;
+        assert(publisher.NotifyChanged<DeadbandAnalogState>());
+    }
+    assert(observer.Published == 0);
+
+    // Explicit NotifyChanged is authoritative and must not re-run equality.
+    authoritative = {101.0f};
+    assert(publisher.NotifyChanged<DeadbandAnalogState>());
+    assert(observer.Published == 1);
+
+    authoritative = {101.1f};
+    assert(publisher.NotifyChanged<DeadbandAnalogState>());
+    assert(observer.Published == 2);
+
     return 0;
 }
