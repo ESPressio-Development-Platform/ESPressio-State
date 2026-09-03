@@ -60,9 +60,12 @@ struct RemoteStateTuple<StateContract<TDefinitions...>> {
 /// <typeparam name="TMaximumDevices">Maximum number of remote devices retained simultaneously.</typeparam>
 /// <typeparam name="TMaximumObservers">Maximum simultaneous lifecycle observer registrations.</typeparam>
 /// <remarks>
-/// Authoritative State availability and device reachability are stored separately.
-/// Every read and availability notification exposes their effective combination.
-/// Device storage and observer registration are independently bounded.
+/// Authoritative State availability and device reachability are stored separately. Every read and
+/// availability notification exposes their effective combination. User notifications are serialized
+/// through one bounded manager operation lane, which is stronger than the required per-State guarantee:
+/// an observer may synchronously mutate this manager, but resulting notifications are deferred until the
+/// active callback sequence returns. This keeps all State identities non-reentrant and deterministic while
+/// retaining finite memory. Device storage and observer registration are independently bounded.
 /// </remarks>
 template<typename TContract, std::size_t TMaximumDevices, std::size_t TMaximumObservers = 8>
 class RemoteStateManager final {
@@ -75,6 +78,8 @@ public:
     static constexpr std::size_t MaximumObservers = TMaximumObservers;
 
 private:
+    static constexpr std::size_t MaximumDeferredNotificationBatches = 4;
+
     class ManagerObservable final : public Observable::ThreadSafeObservable {
     public:
         void DeviceRegistered(const DeviceIdentifier& identifier) {
@@ -131,9 +136,27 @@ private:
     using SnapshotStorage = System::Memory::Vector<RemoteDeviceSnapshot, System::Memory::MemoryPolicy::ExternalPreferred>;
     using TransitionStorage = std::array<AvailabilityTransition, TContract::StateCount>;
 
+    struct NotificationBatch final {
+        DeviceIdentifier Identifier{};
+        StateTypeId TypeId = 0;
+        StateEpoch Epoch = 0;
+        StateRevision Revision = 0;
+        bool Changed = false;
+        bool DeviceRegistered = false;
+        bool StateAccepted = false;
+        bool StateRejected = false;
+        bool ReachabilityChanged = false;
+        StateSourceReachability PreviousReachability = StateSourceReachability::Unknown;
+        StateSourceReachability CurrentReachability = StateSourceReachability::Unknown;
+        TransitionStorage AvailabilityTransitions{};
+    };
+
     mutable DeviceStorage _devices;
     mutable System::Synchronization::RecursiveMutex _mutex;
     mutable std::shared_ptr<ManagerObservable> _observable;
+    bool _notificationDispatching = false;
+    std::array<NotificationBatch, MaximumDeferredNotificationBatches> _deferredNotificationBatches{};
+    std::size_t _deferredNotificationCount = 0;
 
     bool EnsureRuntimeStorage() const {
         std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
@@ -205,20 +228,95 @@ private:
         }
     }
 
+    static bool HasNotifications(const NotificationBatch& batch) noexcept {
+        if (batch.DeviceRegistered || batch.StateAccepted || batch.StateRejected || batch.ReachabilityChanged) return true;
+        for (const auto& transition : batch.AvailabilityTransitions) if (transition.Active) return true;
+        return false;
+    }
+
+    bool PrepareNotificationCapacityLocked() const noexcept {
+        return !_notificationDispatching || _deferredNotificationCount < MaximumDeferredNotificationBatches;
+    }
+
+    bool QueueOrBeginLocked(const NotificationBatch& batch, bool& dispatchNow) {
+        dispatchNow = false;
+        if (!HasNotifications(batch)) return true;
+        if (_notificationDispatching) {
+            if (_deferredNotificationCount >= MaximumDeferredNotificationBatches) return false;
+            _deferredNotificationBatches[_deferredNotificationCount++] = batch;
+            return true;
+        }
+        _notificationDispatching = true;
+        dispatchNow = true;
+        return true;
+    }
+
+    void DispatchNotificationBatch(const NotificationBatch& batch) {
+        auto observable = _observable;
+        if (!observable) return;
+        if (batch.DeviceRegistered) observable->DeviceRegistered(batch.Identifier);
+        if (batch.StateAccepted) observable->StateAccepted(batch.Identifier, batch.TypeId, batch.Epoch, batch.Revision, batch.Changed);
+        if (batch.StateRejected) observable->StateRejected(batch.Identifier, batch.TypeId, batch.Epoch, batch.Revision);
+        if (batch.ReachabilityChanged) {
+            observable->ReachabilityChanged(batch.Identifier, batch.PreviousReachability, batch.CurrentReachability);
+        }
+        for (const auto& transition : batch.AvailabilityTransitions) {
+            if (transition.Active) {
+                observable->StateAvailabilityChanged(transition.Address, transition.Previous, transition.Current);
+            }
+        }
+    }
+
+    void DrainNotifications(NotificationBatch batch) {
+        try {
+            while (true) {
+                DispatchNotificationBatch(batch);
+                {
+                    std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
+                    if (_deferredNotificationCount == 0) {
+                        _notificationDispatching = false;
+                        return;
+                    }
+                    batch = _deferredNotificationBatches[0];
+                    for (std::size_t index = 1; index < _deferredNotificationCount; ++index) {
+                        _deferredNotificationBatches[index - 1] = _deferredNotificationBatches[index];
+                    }
+                    --_deferredNotificationCount;
+                }
+            }
+        } catch (...) {
+            std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
+            _deferredNotificationCount = 0;
+            _notificationDispatching = false;
+            throw;
+        }
+    }
+
     template<typename TDefinition, typename TValue>
     bool ApplyValue(const DeviceIdentifier& identifier, StateEpoch epoch, StateRevision revision, TValue&& value) {
         static_assert(TContract::template Contains<TDefinition>, "State definition is not part of this StateContract");
         if (!EnsureRuntimeStorage()) return false;
-        bool created = false, changed = false, accepted = false;
-        StateAvailabilityStatus previousAvailability{}, currentAvailability{};
+
+        NotificationBatch batch{};
+        bool accepted = false;
+        bool dispatchNow = false;
         {
             std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
+            if (!PrepareNotificationCapacityLocked()) return false;
+
+            bool created = false;
             auto* device = FindOrCreateLocked(identifier, created);
+            batch.Identifier = identifier;
+            batch.TypeId = StateTypeIdOf<TDefinition>;
+            batch.Epoch = epoch;
+            batch.Revision = revision;
+            batch.DeviceRegistered = created;
+
             if (device != nullptr && revision != 0) {
                 auto& slot = std::get<TContract::template IndexOf<TDefinition>()>(device->States);
-                previousAvailability = EffectiveAvailability<TDefinition>(*device);
+                const auto previousAvailability = EffectiveAvailability<TDefinition>(*device);
                 if (!slot.HasValue || epoch > slot.Epoch || (epoch == slot.Epoch && revision > slot.Revision)) {
-                    changed = !slot.HasValue || !(slot.Value == value);
+                    const bool changed = !slot.HasValue || !(slot.Value == value);
                     slot.Value = std::forward<TValue>(value);
                     slot.Epoch = epoch;
                     slot.Revision = revision;
@@ -226,21 +324,28 @@ private:
                     slot.HasAvailability = true;
                     slot.AuthoritativeAvailability = StateAvailability::Available;
                     slot.AuthoritativeReason = StateAvailabilityReason::None;
-                    currentAvailability = EffectiveAvailability<TDefinition>(*device);
+                    const auto currentAvailability = EffectiveAvailability<TDefinition>(*device);
+
+                    batch.Changed = changed;
+                    batch.StateAccepted = true;
+                    if (previousAvailability != currentAvailability) {
+                        batch.AvailabilityTransitions[0] = {
+                            MakeStateAddress<TDefinition>(identifier),
+                            previousAvailability,
+                            currentAvailability,
+                            true
+                        };
+                    }
                     accepted = true;
                 }
             }
+
+            if (!accepted) batch.StateRejected = true;
+            if (!QueueOrBeginLocked(batch, dispatchNow)) return false;
         }
-        if (created) _observable->DeviceRegistered(identifier);
-        if (!accepted) {
-            _observable->StateRejected(identifier, StateTypeIdOf<TDefinition>, epoch, revision);
-            return false;
-        }
-        _observable->StateAccepted(identifier, StateTypeIdOf<TDefinition>, epoch, revision, changed);
-        if (previousAvailability != currentAvailability) {
-            _observable->StateAvailabilityChanged(MakeStateAddress<TDefinition>(identifier), previousAvailability, currentAvailability);
-        }
-        return true;
+
+        if (dispatchNow) DrainNotifications(batch);
+        return accepted;
     }
 
 public:
@@ -286,52 +391,78 @@ public:
     }
 
     template<typename TDefinition>
-    bool ApplyAvailability(const DeviceIdentifier& identifier, StateAvailability availability, StateAvailabilityReason reason = StateAvailabilityReason::None) {
+    bool ApplyAvailability(
+        const DeviceIdentifier& identifier,
+        StateAvailability availability,
+        StateAvailabilityReason reason = StateAvailabilityReason::None
+    ) {
         static_assert(TContract::template Contains<TDefinition>, "State definition is not part of this StateContract");
         if (!EnsureRuntimeStorage()) return false;
-        bool created = false;
-        StateAvailabilityStatus previous{}, current{};
+
+        NotificationBatch batch{};
+        bool dispatchNow = false;
         {
             std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
+            if (!PrepareNotificationCapacityLocked()) return false;
+
+            bool created = false;
             auto* device = FindOrCreateLocked(identifier, created);
             if (device == nullptr) return false;
+
+            batch.Identifier = identifier;
+            batch.TypeId = StateTypeIdOf<TDefinition>;
+            batch.DeviceRegistered = created;
+
             auto& slot = std::get<TContract::template IndexOf<TDefinition>()>(device->States);
-            previous = EffectiveAvailability<TDefinition>(*device);
+            const auto previous = EffectiveAvailability<TDefinition>(*device);
             slot.AuthoritativeAvailability = availability;
             slot.AuthoritativeReason = reason;
             slot.HasAvailability = true;
-            current = EffectiveAvailability<TDefinition>(*device);
+            const auto current = EffectiveAvailability<TDefinition>(*device);
+            if (previous != current) {
+                batch.AvailabilityTransitions[0] = {
+                    MakeStateAddress<TDefinition>(identifier),
+                    previous,
+                    current,
+                    true
+                };
+            }
+
+            if (!QueueOrBeginLocked(batch, dispatchNow)) return false;
         }
-        if (created) _observable->DeviceRegistered(identifier);
-        if (previous != current) _observable->StateAvailabilityChanged(MakeStateAddress<TDefinition>(identifier), previous, current);
+
+        if (dispatchNow) DrainNotifications(batch);
         return true;
     }
 
     bool SetReachability(const DeviceIdentifier& identifier, StateSourceReachability reachability) {
         if (!EnsureRuntimeStorage()) return false;
-        bool created = false, changed = false;
-        StateSourceReachability previous = StateSourceReachability::Unknown;
-        TransitionStorage transitions{};
+
+        NotificationBatch batch{};
+        bool dispatchNow = false;
         {
             std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
+            if (!PrepareNotificationCapacityLocked()) return false;
+
+            bool created = false;
             auto* device = FindOrCreateLocked(identifier, created);
             if (device == nullptr) return false;
-            previous = device->Reachability;
-            changed = previous != reachability;
-            if (changed) {
-                CaptureReachabilityTransitions(*device, previous, reachability, transitions);
+
+            batch.Identifier = identifier;
+            batch.DeviceRegistered = created;
+            const auto previous = device->Reachability;
+            if (previous != reachability) {
+                CaptureReachabilityTransitions(*device, previous, reachability, batch.AvailabilityTransitions);
                 device->Reachability = reachability;
+                batch.ReachabilityChanged = true;
+                batch.PreviousReachability = previous;
+                batch.CurrentReachability = reachability;
             }
+
+            if (!QueueOrBeginLocked(batch, dispatchNow)) return false;
         }
-        if (created) _observable->DeviceRegistered(identifier);
-        if (changed) {
-            _observable->ReachabilityChanged(identifier, previous, reachability);
-            for (const auto& transition : transitions) {
-                if (transition.Active) {
-                    _observable->StateAvailabilityChanged(transition.Address, transition.Previous, transition.Current);
-                }
-            }
-        }
+
+        if (dispatchNow) DrainNotifications(batch);
         return true;
     }
 
@@ -355,7 +486,9 @@ public:
         {
             std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
             snapshots.reserve(_devices.size());
-            for (const auto& device : _devices) snapshots.push_back(RemoteDeviceSnapshot{device.Identifier, device.Reachability});
+            for (const auto& device : _devices) {
+                snapshots.push_back(RemoteDeviceSnapshot{device.Identifier, device.Reachability});
+            }
         }
         for (const auto& snapshot : snapshots) callback(snapshot);
     }
