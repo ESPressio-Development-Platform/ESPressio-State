@@ -1,18 +1,20 @@
 # Platform Abstractions Audit Trail
 
-This file records State changes made during the platform-abstraction tranche tracked by issue #13.
+This file records the current State platform-abstraction boundary after the Mesh structural realignment.
 
-## 2026-08-27
+## Current audit result
 
-### Audit result
-- Core State types, codecs, contracts, publishers, managers and protocol code contain no required ESP32/Arduino/ESP-IDF/FreeRTOS runtime dependency.
-- `RemoteStateObserverThread` delegates execution and wake-up behaviour to ESPressio-Threads `PrecisionThread`; it does not own a native task/runtime primitive.
-- `DeviceIdentifier::FromMacAddress` only transforms caller-supplied address bytes and does not query a platform network interface.
+- Core State types, contracts, local binding, remote replicas, protocol and diagnostics contain no required ESP32/Arduino/ESP-IDF/FreeRTOS runtime dependency.
+- Canonical `DeviceIdentifier` is owned by `ESPressio-System`; State imports that platform-neutral identity and contains no MAC/radio derivation helper.
+- State synchronization and memory behavior use ESPressio-System abstractions rather than platform APIs.
+- `RemoteStateObserverThread` delegates execution and wake-up behavior to ESPressio Threads `PrecisionThread`; State does not own a native task/runtime primitive.
+- Optional introspection/diagnostic serialization remains platform-neutral and does not introduce a concrete transport dependency.
+- Concrete transport/Mesh integration remains outside State core.
 
-### Package metadata
-- Removed the unnecessary Arduino/ESP32-only package restriction from `library.json`.
-- State now advertises its core as framework- and platform-neutral while retaining optional execution integrations through explicitly selected headers/dependencies.
+## Package metadata
+
+`library.json` advertises the State core as framework- and platform-neutral. Its mandatory dependencies are ESPressio System and ESPressio Observable. Optional deferred execution is selected only by including the Threads-backed observer header.
 
 ## Boundary rule
 
-State owns state definition, publication, observation, replication and remote-state semantics. Hardware/runtime execution remains delegated to lower ESPressio layers.
+State owns State definition, application-owned local binding, publication lifecycle, observation, remote replication, availability and subscription semantics. Hardware/runtime execution, physical transport, Mesh routing/membership and authenticated transport provenance remain delegated to their owning ESPressio layers.
