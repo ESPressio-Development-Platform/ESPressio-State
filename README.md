@@ -36,19 +36,41 @@ using DeviceStateContract = ESPressio::State::StateContract<TemperatureState>;
 
 ## Authoritative local State
 
-Application/domain objects remain the authority for local State. `StatePublisher` binds a typed source and obtains the current authoritative value when publication or resynchronisation requires it; State does not require application data to be copied into a second canonical local repository.
+Application/domain objects remain the authority for local State. `StatePublisher` and its `LocalStateRegistry` do not own a second canonical value repository: they retain only typed non-owning references plus registration epoch/revision metadata.
 
 ```cpp
+float temperature = sensor.Temperature();
 StatePublisher<DeviceStateContract> publisher(localDevice);
 
-publisher.RegisterSource<TemperatureState>([&sensor] {
-    return sensor.Temperature();
-});
-
-publisher.Publish<TemperatureState>();
+publisher.Bind<TemperatureState>(temperature);
 ```
 
-A State-definition-specific `StateComparison<TDefinition>` may define semantic equality/deadband behavior. Equivalent ordinary publications may therefore be suppressed without creating historical State traffic.
+The application mutates its own authoritative member and then explicitly declares the semantic change:
+
+```cpp
+temperature = sensor.Temperature();
+publisher.NotifyChanged<TemperatureState>();
+```
+
+`NotifyChanged` is the authoritative publication boundary. It advances that State registration's revision regardless of equality policy, captures one immutable typed `StateUpdate`, and synchronously notifies transport/application observers. Direct local reads continue to dereference the application-owned source rather than a shadow copy.
+
+Initial binding establishes revision 1. If a binding is removed with `StateUnbindMode::Retain`, its epoch/revision lineage remains inactive and a later rebind advances the existing revision before the replacement source becomes visible. This prevents one epoch/revision pair from ever denoting two different values. `StateUnbindMode::Discard` terminates the lineage so the next bind begins a new epoch at revision 1.
+
+```cpp
+publisher.Unbind<TemperatureState>(StateUnbindMode::Retain);
+publisher.Bind<TemperatureState>(temperature);   // same epoch, next revision
+
+publisher.Unbind<TemperatureState>(StateUnbindMode::Discard);
+publisher.Bind<TemperatureState>(temperature);   // new epoch, revision 1
+```
+
+Unbinding also emits authoritative `Unavailable / SourceUnbound`; binding emits authoritative `Available`. Availability lifecycle is separate from value publication.
+
+`Snapshot<TDefinition>()` reads the current bound value and current epoch/revision without advancing either. It is intended for initial subscription establishment and resynchronisation.
+
+`StatePublisher<TContract, TMaximumObservers>` has a finite observer-registration capacity; the default is 8 simultaneous registrations. Capacity is independent of the State contract's number of definitions. A contract observer registered against several typed interfaces still consumes one registration.
+
+A State-definition-specific `StateComparison<TDefinition>` remains available for application/domain code or higher-level State value wrappers that want semantic equality/deadband behavior before deciding whether to call `NotifyChanged`. Reference-backed State deliberately does not retain a hidden shadow value merely to perform equality suppression.
 
 ## Remote replicas
 
@@ -122,7 +144,9 @@ remoteState.SetReachability(
 
 ## Observation
 
-Core State lifecycle notification uses ESPressio Observable. The manager exposes distinct observations for:
+Core State lifecycle notification uses ESPressio Observable. The publisher exposes distinct local observations for source binding/unbinding, authoritative availability changes, generic committed publications, and typed committed `StateUpdate` snapshots. Publisher observer registrations are bounded by the publisher's compile-time capacity.
+
+The remote manager exposes distinct observations for:
 
 - accepted/rejected remote revisions;
 - effective State availability changes keyed by `StateAddress`;
