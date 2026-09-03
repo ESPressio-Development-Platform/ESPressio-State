@@ -26,32 +26,36 @@ int main() {
     assert(registration.Bound);
     assert(!registration.Retained);
     assert(registration.Epoch == 1);
-    assert(registration.Revision == 0);
+    assert(registration.Revision == 1);
 
     LocalStateView<CounterState> view;
     assert(registry.Read<CounterState>(view));
     assert(&view.ValueRef() == &counter);
     assert(view.ValueRef() == 10);
+    assert(view.Revision == 1);
 
     counter = 11;
     StateRevision revision = 0;
     assert(registry.NotifyChanged<CounterState>(revision));
-    assert(revision == 1);
+    assert(revision == 2);
     assert(registry.Read<CounterState>(view));
     assert(view.ValueRef() == 11);
-    assert(view.Revision == 1);
+    assert(view.Revision == 2);
 
     assert(registry.Unbind<CounterState>(StateUnbindMode::Retain));
     assert(!registry.Read<CounterState>(view));
     registration = registry.Registration<CounterState>();
     assert(!registration.Bound && registration.Retained);
-    assert(registration.Epoch == 1 && registration.Revision == 1);
+    assert(registration.Epoch == 1 && registration.Revision == 2);
 
+    counter = 12;
     assert(registry.Bind<CounterState>(counter));
     registration = registry.Registration<CounterState>();
-    assert(registration.Epoch == 1 && registration.Revision == 1);
+    assert(registration.Epoch == 1 && registration.Revision == 3);
+    assert(registry.Read<CounterState>(view));
+    assert(view.ValueRef() == 12 && view.Revision == 3);
     assert(registry.NotifyChanged<CounterState>(revision));
-    assert(revision == 2);
+    assert(revision == 4);
 
     assert(registry.Unbind<CounterState>(StateUnbindMode::Discard));
     registration = registry.Registration<CounterState>();
@@ -60,13 +64,14 @@ int main() {
     assert(registry.Bind<CounterState>(counter));
     registration = registry.Registration<CounterState>();
     assert(registration.Epoch == 2);
-    assert(registration.Revision == 0);
+    assert(registration.Revision == 1);
 
     bool enabled = false;
     {
         auto binding = registry.BindScoped<EnabledState>(enabled, StateUnbindMode::Retain);
         assert(binding);
         assert(registry.Registration<EnabledState>().Bound);
+        assert(registry.Registration<EnabledState>().Revision == 1);
     }
     assert(!registry.Registration<EnabledState>().Bound);
     assert(registry.Registration<EnabledState>().Retained);
