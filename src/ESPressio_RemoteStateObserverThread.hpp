@@ -28,14 +28,22 @@
 namespace ESPressio {
 namespace State {
 
-template<typename TContract, std::size_t TMaximumDevices>
+/// <summary>Coalesces remote State changes and dispatches application observers from an ESPressio PrecisionThread.</summary>
+/// <typeparam name="TContract">State contract accepted by the observed manager.</typeparam>
+/// <typeparam name="TMaximumDevices">Maximum number of manager devices represented by bounded dirty/delivered storage.</typeparam>
+/// <typeparam name="TMaximumObservers">Maximum simultaneous application observer registrations.</typeparam>
+template<typename TContract, std::size_t TMaximumDevices, std::size_t TMaximumObservers = 8>
 class RemoteStateObserverThread final :
     public Threads::PrecisionThread<Units::NanoSeconds<uint64_t>, Threads::PrecisionThreadTraits<Units::NanoSeconds<uint64_t>>>,
     public IRemoteStateManagerObserver {
+    static_assert(TMaximumDevices > 0, "RemoteStateObserverThread device capacity must be non-zero");
+    static_assert(TMaximumObservers > 0, "RemoteStateObserverThread observer capacity must be non-zero");
+
 public:
     using Manager = RemoteStateManager<TContract, TMaximumDevices>;
     using Time = Units::NanoSeconds<uint64_t>;
     using Base = Threads::PrecisionThread<Time, Threads::PrecisionThreadTraits<Time>>;
+    static constexpr std::size_t MaximumObservers = TMaximumObservers;
 
 private:
     static constexpr std::size_t MaximumDirtyStates = TMaximumDevices * TContract::StateCount;
@@ -107,6 +115,19 @@ private:
         } catch (...) { return false; }
     }
 
+    template<typename TRegistrar>
+    Observable::ObserverHandlePtr RegisterBounded(TRegistrar&& registrar) {
+        if (!EnsureRuntimeStorage()) return {};
+        std::lock_guard<std::mutex> lock(_dirtyMutex);
+        if (_observable->GetObserverCount() >= TMaximumObservers) return {};
+        return registrar(*_observable);
+    }
+
+    std::shared_ptr<DispatchObservable> ObservableSnapshot() const {
+        std::lock_guard<std::mutex> lock(_dirtyMutex);
+        return _observable;
+    }
+
     DeliveredDevice* FindOrCreateDelivered(const DeviceIdentifier& device) {
         for (auto& record : _delivered) if (record.Device == device) return &record;
         if (_delivered.size() >= TMaximumDevices) return nullptr;
@@ -151,8 +172,11 @@ private:
                         auto& previous = std::get<TIndex>(delivered->States);
                         hasPreviousValue = previous.HasValue;
                         if (hasPreviousValue) previousValue = previous.Value;
-                        _observable->template StateChanged<Definition>(dirty.Device, hasPreviousValue, previousValue,
-                            snapshot.Value, snapshot.Epoch, snapshot.Revision, snapshot.Availability);
+                        auto observable = ObservableSnapshot();
+                        if (observable) {
+                            observable->template StateChanged<Definition>(dirty.Device, hasPreviousValue, previousValue,
+                                snapshot.Value, snapshot.Epoch, snapshot.Revision, snapshot.Availability);
+                        }
                         previous.Value = snapshot.Value;
                         previous.Epoch = snapshot.Epoch;
                         previous.Revision = snapshot.Revision;
@@ -175,16 +199,17 @@ private:
     }
 
     void Drain() {
-        if (!_observable) return;
+        auto observable = ObservableSnapshot();
+        if (!observable) return;
         {
             std::lock_guard<std::mutex> lock(_dirtyMutex);
             _processingStates.swap(_dirtyStates);
             _processingAvailability.swap(_dirtyAvailability);
             _processingReachability.swap(_dirtyReachability);
         }
-        for (const auto& record : _processingAvailability) _observable->AvailabilityChanged(record.Address, record.Previous, record.Current);
+        for (const auto& record : _processingAvailability) observable->AvailabilityChanged(record.Address, record.Previous, record.Current);
         _processingAvailability.clear();
-        for (const auto& record : _processingReachability) _observable->ReachabilityChanged(record.Device, record.Previous, record.Current);
+        for (const auto& record : _processingReachability) observable->ReachabilityChanged(record.Device, record.Previous, record.Current);
         _processingReachability.clear();
         for (const auto& record : _processingStates) NotifyState(record);
         _processingStates.clear();
@@ -211,7 +236,8 @@ public:
     }
 
     void ShutdownObserverThread() {
-        _managerHandle.reset(); _prepared = false;
+        _managerHandle.reset();
+        _prepared = false;
         {
             std::lock_guard<std::mutex> lock(_dirtyMutex);
             _dirtyStates.clear(); _processingStates.clear();
@@ -227,25 +253,35 @@ public:
     template<typename TDefinition>
     Observable::ObserverHandlePtr RegisterStateObserver(IRemoteStateObserver<TDefinition>* observer) {
         static_assert(TContract::template Contains<TDefinition>, "State definition is not part of this StateContract");
-        if (!EnsureRuntimeStorage()) return {};
-        return _observable->template RegisterObserverAs<IRemoteStateObserver<TDefinition>>(observer);
+        if (observer == nullptr) return {};
+        return RegisterBounded([&](DispatchObservable& observable) {
+            return observable.template RegisterObserverAs<IRemoteStateObserver<TDefinition>>(observer);
+        });
     }
 
     Observable::ObserverHandlePtr RegisterAvailabilityObserver(IRemoteStateAvailabilityObserver* observer) {
-        if (!EnsureRuntimeStorage()) return {};
-        return _observable->template RegisterObserverAs<IRemoteStateAvailabilityObserver>(observer);
+        if (observer == nullptr) return {};
+        return RegisterBounded([&](DispatchObservable& observable) {
+            return observable.template RegisterObserverAs<IRemoteStateAvailabilityObserver>(observer);
+        });
     }
 
     Observable::ObserverHandlePtr RegisterReachabilityObserver(IRemoteStateReachabilityObserver* observer) {
-        if (!EnsureRuntimeStorage()) return {};
-        return _observable->template RegisterObserverAs<IRemoteStateReachabilityObserver>(observer);
+        if (observer == nullptr) return {};
+        return RegisterBounded([&](DispatchObservable& observable) {
+            return observable.template RegisterObserverAs<IRemoteStateReachabilityObserver>(observer);
+        });
     }
 
-    void UnregisterObserver(Observable::IObserver* observer) { if (_observable) _observable->UnregisterObserver(observer); }
+    void UnregisterObserver(Observable::IObserver* observer) {
+        auto observable = ObservableSnapshot();
+        if (observable) observable->UnregisterObserver(observer);
+    }
 
     void OnRemoteStateAccepted(const DeviceIdentifier& device, StateTypeId typeId, StateEpoch, StateRevision, bool changed) override {
         if (!changed || !_prepared) return;
-        MarkStateDirty(device, typeId); this->WakeForWork();
+        MarkStateDirty(device, typeId);
+        this->WakeForWork();
     }
 
     void OnRemoteStateAvailabilityChanged(const StateAddress& address, StateAvailabilityStatus previous, StateAvailabilityStatus current) override {
