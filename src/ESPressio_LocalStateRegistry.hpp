@@ -49,8 +49,10 @@ struct LocalStateView final {
 /// <typeparam name="TContract">Closed set of State definitions supported by the registry.</typeparam>
 /// <remarks>
 /// The application remains responsible for the lifetime and mutation of every bound value. The registry
-/// exposes only const views, owns registration epoch/revision metadata, rejects duplicate authority, and
-/// requires NotifyChanged to advance the distributed revision after authoritative mutation.
+/// exposes only const views, owns each State registration's epoch/revision lineage, rejects duplicate
+/// authority, and requires NotifyChanged to advance the distributed revision after authoritative mutation.
+/// Initial binding establishes revision 1. Rebinding a retained registration advances the existing
+/// revision before exposing the new source so the same epoch/revision can never denote two different values.
 /// </remarks>
 template<typename TContract>
 class LocalStateRegistry final {
@@ -79,6 +81,13 @@ private:
     static StateEpoch NextEpoch(StateEpoch current) noexcept {
         if (current == 0 || current == std::numeric_limits<StateEpoch>::max()) return 1;
         return static_cast<StateEpoch>(current + 1);
+    }
+
+    static bool AdvanceRevision(StateRevision& revision) noexcept {
+        if (revision == std::numeric_limits<StateRevision>::max()) return false;
+        ++revision;
+        if (revision == 0) return false;
+        return true;
     }
 
     template<typename TDefinition>
@@ -133,17 +142,27 @@ public:
     };
 
     /// <summary>Binds one application-owned value as the sole local authority for its State definition.</summary>
+    /// <remarks>
+    /// A new lineage begins at epoch N/revision 1. Rebinding after Retain preserves the epoch and advances
+    /// the revision once before exposing the replacement source, preventing an old revision from acquiring
+    /// a different value. Binding fails if the revision space is exhausted.
+    /// </remarks>
     template<typename TDefinition>
     bool Bind(StateValueType<TDefinition>& source) {
         std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
         auto& slot = GetSlot<TDefinition>();
         if (slot.Bound) return false;
+
         if (slot.NeedsNewEpoch) {
             slot.Epoch = NextEpoch(slot.Epoch);
-            slot.Revision = 0;
+            slot.Revision = 1;
             slot.Retained = false;
             slot.NeedsNewEpoch = false;
+        } else {
+            if (!AdvanceRevision(slot.Revision)) return false;
+            slot.Retained = false;
         }
+
         slot.Source = &source;
         slot.Bound = true;
         return true;
@@ -174,19 +193,14 @@ public:
         return true;
     }
 
-    /// <summary>
-    /// Advances the revision after the application has authoritatively changed the bound value.
-    /// </summary>
-    /// <remarks>
-    /// NotifyChanged is explicit authority: it advances revision regardless of any equality policy.
-    /// </remarks>
+    /// <summary>Advances the revision after the application has authoritatively changed the bound value.</summary>
+    /// <remarks>NotifyChanged is explicit authority and therefore advances revision regardless of equality policy.</remarks>
     template<typename TDefinition>
     bool NotifyChanged(StateRevision& revision) noexcept {
         std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
         auto& slot = GetSlot<TDefinition>();
         if (!slot.Bound || slot.Source == nullptr) return false;
-        if (slot.Revision == std::numeric_limits<StateRevision>::max()) return false;
-        ++slot.Revision;
+        if (!AdvanceRevision(slot.Revision)) return false;
         revision = slot.Revision;
         return true;
     }
