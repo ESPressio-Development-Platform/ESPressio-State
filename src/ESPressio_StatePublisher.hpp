@@ -188,16 +188,12 @@ class StatePublisher final {
     }
 
 public:
-    /// <summary>Maximum number of simultaneous observer registrations accepted by this publisher.</summary>
     static constexpr std::size_t MaximumObservers = TMaximumObservers;
 
-    /// <summary>Creates a publisher for one permanent authoritative device identity.</summary>
     explicit StatePublisher(const DeviceIdentifier& origin = DeviceIdentifier{}) : _origin(origin) {}
 
-    /// <summary>Returns the permanent device identity carried by this publisher's State addresses.</summary>
     const DeviceIdentifier& Origin() const noexcept { return _origin; }
 
-    /// <summary>Registers one lifecycle observer when bounded observer capacity remains.</summary>
     Observable::ObserverHandlePtr RegisterObserver(IStatePublisherObserver* observer) {
         if (observer == nullptr) return {};
         return RegisterBounded([&](PublisherObservable& observable) {
@@ -205,7 +201,6 @@ public:
         });
     }
 
-    /// <summary>Registers one observer against publisher lifecycle plus every typed State in the contract.</summary>
     template<typename TObserver>
     Observable::ObserverHandlePtr RegisterContractObserver(TObserver* observer) {
         if (observer == nullptr) return {};
@@ -214,7 +209,6 @@ public:
         });
     }
 
-    /// <summary>Registers one typed publication observer when bounded observer capacity remains.</summary>
     template<typename TDefinition>
     Observable::ObserverHandlePtr RegisterPublishedObserver(IStatePublishedObserver<TDefinition>* observer) {
         static_assert(TContract::template Contains<TDefinition>, "State definition is not part of this StateContract");
@@ -224,20 +218,23 @@ public:
         });
     }
 
-    /// <summary>Explicitly unregisters an observer; destroying its RAII handle has the same effect.</summary>
     void UnregisterObserver(Observable::IObserver* observer) {
         auto observable = ObservableSnapshot();
         if (observable) observable->UnregisterObserver(observer);
     }
 
     /// <summary>Binds one application-owned value as the sole local authority for the State definition.</summary>
+    /// <remarks>User observers are invoked only after publisher/registry mutation locks have been released.</remarks>
     template<typename TDefinition>
     bool Bind(StateValueType<TDefinition>& source) {
-        std::lock_guard<System::Synchronization::RecursiveMutex> publicationLock(_publicationMutex);
-        if (!_origin) return false;
-        if (!_registry.template Bind<TDefinition>(source)) return false;
+        LocalStateRegistrationSnapshot registration{};
+        {
+            std::lock_guard<System::Synchronization::RecursiveMutex> publicationLock(_publicationMutex);
+            if (!_origin) return false;
+            if (!_registry.template Bind<TDefinition>(source)) return false;
+            registration = _registry.template Registration<TDefinition>();
+        }
 
-        const auto registration = _registry.template Registration<TDefinition>();
         auto observable = ObservableSnapshot();
         if (observable) {
             const auto address = MakeStateAddress<TDefinition>(_origin);
@@ -248,15 +245,17 @@ public:
     }
 
     /// <summary>Removes one bound source while preserving or discarding its registration lineage according to mode.</summary>
+    /// <remarks>User observers are invoked only after publisher/registry mutation locks have been released.</remarks>
     template<typename TDefinition>
     bool Unbind(StateUnbindMode mode) {
-        std::lock_guard<System::Synchronization::RecursiveMutex> publicationLock(_publicationMutex);
-        const auto before = _registry.template Registration<TDefinition>();
-        if (!before.Bound) return false;
-        if (!_registry.template Unbind<TDefinition>(mode)) return false;
-
-        auto& notificationState = GetNotificationState<TDefinition>();
-        notificationState.PendingLatest.reset();
+        LocalStateRegistrationSnapshot before{};
+        {
+            std::lock_guard<System::Synchronization::RecursiveMutex> publicationLock(_publicationMutex);
+            before = _registry.template Registration<TDefinition>();
+            if (!before.Bound) return false;
+            if (!_registry.template Unbind<TDefinition>(mode)) return false;
+            GetNotificationState<TDefinition>().PendingLatest.reset();
+        }
 
         auto observable = ObservableSnapshot();
         if (observable) {
@@ -292,7 +291,11 @@ public:
             prepared.Header.Origin = _origin;
             prepared.Header.TypeId = StateTypeIdOf<TDefinition>;
             prepared.Header.Epoch = before.Epoch;
-            prepared.Value = before.ValueRef();
+            try {
+                prepared.Value = before.ValueRef();
+            } catch (...) {
+                return false;
+            }
 
             if (notificationState.Dispatching) {
                 try {
@@ -319,13 +322,11 @@ public:
         return true;
     }
 
-    /// <summary>Reads the currently bound application-owned value without changing revision or publication state.</summary>
     template<typename TDefinition>
     bool Read(LocalStateView<TDefinition>& view) const noexcept {
         return _registry.template Read<TDefinition>(view);
     }
 
-    /// <summary>Returns local registration metadata even when Retain has left the State temporarily unbound.</summary>
     template<typename TDefinition>
     LocalStateRegistrationSnapshot Registration() const noexcept {
         return _registry.template Registration<TDefinition>();
@@ -343,7 +344,11 @@ public:
         update.Header.TypeId = StateTypeIdOf<TDefinition>;
         update.Header.Epoch = view.Epoch;
         update.Header.Revision = view.Revision;
-        update.Value = view.ValueRef();
+        try {
+            update.Value = view.ValueRef();
+        } catch (...) {
+            return false;
+        }
         return true;
     }
 };
