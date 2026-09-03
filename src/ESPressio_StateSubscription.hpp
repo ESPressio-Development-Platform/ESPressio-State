@@ -24,23 +24,17 @@ enum class StateSubscriptionScope : uint8_t {
 /// <typeparam name="TDefinition">State definition being subscribed to.</typeparam>
 template<typename TDefinition>
 struct StateSubscription final {
-    /// <summary>Stable type identifier of the subscribed state definition.</summary>
     static constexpr StateTypeId TypeId = StateTypeIdOf<TDefinition>;
-    /// <summary>Device scope applied to the subscription.</summary>
     StateSubscriptionScope Scope = StateSubscriptionScope::AnyDevice;
-    /// <summary>Specific device when <c>Scope</c> is <c>SpecificDevice</c>.</summary>
     DeviceIdentifier Device{};
 
-    /// <summary>Creates a subscription accepting the state from any remote device.</summary>
     static constexpr StateSubscription Any() { return StateSubscription{}; }
-    /// <summary>Creates a subscription restricted to one remote device.</summary>
     static constexpr StateSubscription From(const DeviceIdentifier& device) {
         StateSubscription result;
         result.Scope = StateSubscriptionScope::SpecificDevice;
         result.Device = device;
         return result;
     }
-    /// <summary>Determines whether a remote device matches this subscription's scope.</summary>
     bool Matches(const DeviceIdentifier& device) const noexcept {
         return Scope == StateSubscriptionScope::AnyDevice || Device == device;
     }
@@ -48,23 +42,22 @@ struct StateSubscription final {
 
 /// <summary>Maintains a bounded registry of local remote-state subscription interests.</summary>
 /// <typeparam name="TCapacity">Maximum number of retained subscription descriptors.</typeparam>
-/// <remarks>Construction is allocation-free. Bounded record storage and callback snapshots prefer external memory and are materialized only when registry operations require them. Optional observer infrastructure is allocated only when an observer is registered.</remarks>
-template<std::size_t TCapacity>
+/// <typeparam name="TMaximumObservers">Maximum simultaneous lifecycle observer registrations.</typeparam>
+/// <remarks>Construction is allocation-free. Bounded record storage and callback snapshots prefer external memory and are materialized only when registry operations require them. Optional observer infrastructure is allocated only when an observer is registered, and observer registration is independently bounded.</remarks>
+template<std::size_t TCapacity, std::size_t TMaximumObservers = 8>
 class StateSubscriptionRegistry final {
+    static_assert(TCapacity > 0, "StateSubscriptionRegistry capacity must be non-zero");
+    static_assert(TMaximumObservers > 0, "StateSubscriptionRegistry observer capacity must be non-zero");
+
 public:
-    /// <summary>Runtime description of one registered state subscription.</summary>
     struct Descriptor {
-        /// <summary>Stable state type identifier.</summary>
         StateTypeId TypeId = 0;
-        /// <summary>Device scope associated with the subscription.</summary>
         StateSubscriptionScope Scope = StateSubscriptionScope::AnyDevice;
-        /// <summary>Specific device when the scope is device-specific.</summary>
         DeviceIdentifier Device{};
     };
 
 private:
-    static constexpr auto ExternalPreferred =
-        System::Memory::MemoryPolicy::ExternalPreferred;
+    static constexpr auto ExternalPreferred = System::Memory::MemoryPolicy::ExternalPreferred;
 
     class RegistryObservable final : public Observable::ThreadSafeObservable {
     public:
@@ -101,6 +94,7 @@ private:
 
     mutable RecordStorage _records;
     mutable std::mutex _mutex;
+    mutable std::mutex _observerMutex;
     std::shared_ptr<RegistryObservable> _observable;
 
     bool EnsureRecords() const {
@@ -115,12 +109,10 @@ private:
     }
 
     bool EnsureObservable() {
+        std::lock_guard<std::mutex> lock(_observerMutex);
         if (_observable) return true;
         try {
-            _observable = System::Memory::MakeShared<
-                RegistryObservable,
-                ExternalPreferred
-            >();
+            _observable = System::Memory::MakeShared<RegistryObservable, ExternalPreferred>();
             return static_cast<bool>(_observable);
         } catch (...) {
             return false;
@@ -128,23 +120,25 @@ private:
     }
 
 public:
-    /// <summary>Maximum number of subscriptions retained by this registry.</summary>
     static constexpr std::size_t Capacity = TCapacity;
+    static constexpr std::size_t MaximumObservers = TMaximumObservers;
 
-    /// <summary>Registers an observer for subscription-registry lifecycle events, allocating observer infrastructure on demand.</summary>
     Observable::ObserverHandlePtr RegisterObserver(IStateSubscriptionRegistryObserver* observer) {
-        if (!EnsureObservable()) return {};
+        if (observer == nullptr || !EnsureObservable()) return {};
+        std::lock_guard<std::mutex> lock(_observerMutex);
+        if (_observable->GetObserverCount() >= TMaximumObservers) return {};
         return _observable->template RegisterObserverAs<IStateSubscriptionRegistryObserver>(observer);
     }
 
-    /// <summary>Unregisters a subscription-registry observer.</summary>
     void UnregisterObserver(IStateSubscriptionRegistryObserver* observer) {
-        if (_observable) _observable->UnregisterObserver(observer);
+        std::shared_ptr<RegistryObservable> observable;
+        {
+            std::lock_guard<std::mutex> lock(_observerMutex);
+            observable = _observable;
+        }
+        if (observable) observable->UnregisterObserver(observer);
     }
 
-    /// <summary>Adds a typed state subscription when it is not already present and capacity permits.</summary>
-    /// <typeparam name="TDefinition">State definition to subscribe to.</typeparam>
-    /// <returns><c>true</c> when the subscription is present after the call.</returns>
     template<typename TDefinition>
     bool Subscribe(const StateSubscription<TDefinition>& subscription = StateSubscription<TDefinition>::Any()) {
         if (!EnsureRecords()) return false;
@@ -170,23 +164,21 @@ public:
             if (!added) capacityExhausted = true;
         }
 
-        // Observer/transport code may synchronously call back into the registry
-        // (for example when a Subscribe immediately produces an initial State
-        // snapshot). Never execute that code while the registry mutex is held.
+        std::shared_ptr<RegistryObservable> observable;
+        {
+            std::lock_guard<std::mutex> lock(_observerMutex);
+            observable = _observable;
+        }
         if (added) {
-            if (_observable) {
-                _observable->Subscribed(descriptor.TypeId, descriptor.Scope, descriptor.Device);
-            }
+            if (observable) observable->Subscribed(descriptor.TypeId, descriptor.Scope, descriptor.Device);
             return true;
         }
-        if (capacityExhausted && _observable) {
-            _observable->CapacityExhausted(descriptor.TypeId, descriptor.Scope, descriptor.Device);
+        if (capacityExhausted && observable) {
+            observable->CapacityExhausted(descriptor.TypeId, descriptor.Scope, descriptor.Device);
         }
         return false;
     }
 
-    /// <summary>Removes a typed state subscription when present.</summary>
-    /// <typeparam name="TDefinition">State definition to unsubscribe from.</typeparam>
     template<typename TDefinition>
     bool Unsubscribe(const StateSubscription<TDefinition>& subscription = StateSubscription<TDefinition>::Any()) {
         if (!EnsureRecords()) return false;
@@ -203,13 +195,17 @@ public:
                 }
             }
         }
-        if (removed && _observable) {
-            _observable->Unsubscribed(descriptor.TypeId, descriptor.Scope, descriptor.Device);
+        if (removed) {
+            std::shared_ptr<RegistryObservable> observable;
+            {
+                std::lock_guard<std::mutex> lock(_observerMutex);
+                observable = _observable;
+            }
+            if (observable) observable->Unsubscribed(descriptor.TypeId, descriptor.Scope, descriptor.Device);
         }
         return removed;
     }
 
-    /// <summary>Determines whether the specified state type is subscribed for a remote device.</summary>
     bool IsSubscribed(const DeviceIdentifier& device, StateTypeId typeId) const {
         if (!EnsureRecords()) return false;
         std::lock_guard<std::mutex> lock(_mutex);
@@ -220,13 +216,11 @@ public:
         return false;
     }
 
-    /// <summary>Determines whether a typed state definition is subscribed for a remote device.</summary>
     template<typename TDefinition>
     bool IsSubscribed(const DeviceIdentifier& device) const {
         return IsSubscribed(device, StateTypeIdOf<TDefinition>);
     }
 
-    /// <summary>Gets the number of active subscriptions.</summary>
     std::size_t Count() const {
         if (!EnsureRecords()) return 0;
         std::lock_guard<std::mutex> lock(_mutex);
@@ -235,7 +229,6 @@ public:
         return count;
     }
 
-    /// <summary>Invokes a callback for a stable externally backed snapshot of each active subscription descriptor.</summary>
     template<typename TCallback>
     void ForEach(TCallback&& callback) const {
         if (!EnsureRecords()) return;
