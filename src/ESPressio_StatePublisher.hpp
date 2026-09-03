@@ -186,14 +186,9 @@ class StatePublisher final {
     }
 
     template<typename TDefinition>
-    bool EnqueueOperationLocked(
-        NotificationState<TDefinition>& state,
-        DeferredOperation<TDefinition>&& operation
-    ) {
+    bool EnqueueOperationLocked(NotificationState<TDefinition>& state, DeferredOperation<TDefinition>&& operation) {
         if (!state.Dispatching) return false;
 
-        // Only adjacent publications are coalescible. A lifecycle operation
-        // between them is an ordering boundary that must remain observable.
         if (
             operation.Kind == OperationKind::Publication &&
             !state.Deferred.empty() &&
@@ -228,9 +223,7 @@ class StatePublisher final {
                 observable->SourceUnbound(address, operation.UnbindMode, operation.Epoch, operation.Revision);
                 break;
             case OperationKind::Publication:
-                if (operation.Publication) {
-                    observable->template Published<TDefinition>(*operation.Publication);
-                }
+                if (operation.Publication) observable->template Published<TDefinition>(*operation.Publication);
                 break;
         }
     }
@@ -240,7 +233,6 @@ class StatePublisher final {
         try {
             while (true) {
                 DispatchOperation<TDefinition>(operation);
-
                 {
                     std::lock_guard<System::Synchronization::RecursiveMutex> lock(_publicationMutex);
                     auto& state = GetNotificationState<TDefinition>();
@@ -307,7 +299,6 @@ public:
     }
 
     /// <summary>Binds one application-owned value as the sole local authority for the State definition.</summary>
-    /// <returns><c>false</c> when authority already exists or a nested same-State operation cannot be accepted within the finite deferred lane.</returns>
     template<typename TDefinition>
     bool Bind(StateValueType<TDefinition>& source) {
         DeferredOperation<TDefinition> operation;
@@ -336,7 +327,6 @@ public:
     }
 
     /// <summary>Removes one bound source while preserving or discarding its registration lineage according to mode.</summary>
-    /// <returns><c>false</c> when no source is bound or a nested same-State operation cannot be accepted within the finite deferred lane.</returns>
     template<typename TDefinition>
     bool Unbind(StateUnbindMode mode) {
         DeferredOperation<TDefinition> operation;
@@ -368,9 +358,10 @@ public:
 
     /// <summary>Advances the local registration revision and publishes the current authoritative value.</summary>
     /// <remarks>
-    /// Equality is deliberately not re-evaluated here. The value and any required deferred payload storage are
-    /// prepared before revision commit so allocation/copy failure cannot consume a revision. Consecutive deferred
-    /// publications are latest-fact coalesced, while intervening lifecycle operations preserve their exact order.
+    /// Equality is deliberately not re-evaluated here. The immutable publication payload and any deferred queue
+    /// capacity are prepared before revision commit, so allocation/copy failure cannot consume a revision.
+    /// Consecutive deferred publications are latest-fact coalesced, while intervening lifecycle operations
+    /// preserve their exact order.
     /// </remarks>
     template<typename TDefinition>
     bool NotifyChanged(StateRevision* committedRevision = nullptr) {
@@ -394,35 +385,21 @@ public:
             prepared.Header.Epoch = before.Epoch;
             try {
                 prepared.Value = before.ValueRef();
+                operation.Publication = System::Memory::MakeShared<Update, ExternalPreferred>(prepared);
             } catch (...) {
                 return false;
             }
 
-            if (state.Dispatching) {
-                try {
-                    operation.Publication = System::Memory::MakeShared<Update, ExternalPreferred>(prepared);
-                } catch (...) {
-                    return false;
-                }
-            }
-
             if (!_registry.template NotifyChanged<TDefinition>(revision)) return false;
             prepared.Header.Revision = revision;
+            operation.Publication->Header.Revision = revision;
             operation.Kind = OperationKind::Publication;
             operation.Epoch = before.Epoch;
             operation.Revision = revision;
 
             if (state.Dispatching) {
-                operation.Publication->Header.Revision = revision;
                 if (!EnqueueOperationLocked(state, std::move(operation))) return false;
             } else {
-                try {
-                    operation.Publication = System::Memory::MakeShared<Update, ExternalPreferred>(std::move(prepared));
-                } catch (...) {
-                    // No revision rollback is possible after commit; this path is
-                    // avoided by allocating the dispatch payload before commit.
-                    return false;
-                }
                 state.Dispatching = true;
                 dispatchNow = true;
             }
