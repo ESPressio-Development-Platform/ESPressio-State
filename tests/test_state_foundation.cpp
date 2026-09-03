@@ -18,13 +18,14 @@ class StateObserver final : public IRemoteStateManagerObserver, public IStateSub
     public IStateSubscriberRegistryObserver, public IStatePublisherObserver,
     public IStatePublishedObserver<FrontGyroscope>, public IStatePublishedObserver<RearGyroscope> {
 public:
-    int Devices = 0, Accepted = 0, Changed = 0, Rejected = 0, Availability = 0;
+    int Devices = 0, Accepted = 0, Changed = 0, Rejected = 0, Availability = 0, Reachability = 0;
     int Subscribed = 0, Unsubscribed = 0, RemoteSubscriberAdded = 0, RemoteSubscriberRemoved = 0, RemoteSubscriberDeviceRemoved = 0;
     int Sources = 0, Published = 0, FrontPublished = 0, RearPublished = 0;
     void OnRemoteStateDeviceRegistered(const DeviceIdentifier&) override { ++Devices; }
     void OnRemoteStateAccepted(const DeviceIdentifier&, StateTypeId, StateEpoch, StateRevision, bool changed) override { ++Accepted; if (changed) ++Changed; }
     void OnRemoteStateRejected(const DeviceIdentifier&, StateTypeId, StateEpoch, StateRevision) override { ++Rejected; }
-    void OnRemoteStateAvailabilityChanged(const DeviceIdentifier&, RemoteDeviceAvailability, RemoteDeviceAvailability) override { ++Availability; }
+    void OnRemoteStateAvailabilityChanged(const StateAddress&, StateAvailabilityStatus, StateAvailabilityStatus) override { ++Availability; }
+    void OnRemoteStateReachabilityChanged(const DeviceIdentifier&, StateSourceReachability, StateSourceReachability) override { ++Reachability; }
     void OnStateSubscribed(StateTypeId, StateSubscriptionScope, const DeviceIdentifier&) override { ++Subscribed; }
     void OnStateUnsubscribed(StateTypeId, StateSubscriptionScope, const DeviceIdentifier&) override { ++Unsubscribed; }
     void OnRemoteStateSubscriberAdded(const DeviceIdentifier&, StateTypeId) override { ++RemoteSubscriberAdded; }
@@ -52,16 +53,29 @@ int main() {
     static_assert(Contract::IndexOf<FrontGyroscope>() == 0);
     const auto device = MakeDevice(1); const auto otherDevice = MakeDevice(2);
     assert(device && otherDevice && device != otherDevice);
+    const StateAddress frontAddress = MakeStateAddress<FrontGyroscope>(device);
+    assert(frontAddress && frontAddress.Device == device && frontAddress.TypeId == FrontGyroscope::Id);
 
     StateObserver observer;
     RemoteStateManager<Contract, 2> manager;
     auto managerHandle = manager.RegisterObserver(static_cast<IRemoteStateManagerObserver*>(&observer));
+    assert(manager.SetReachability(device, StateSourceReachability::Reachable));
     assert(manager.Apply<FrontGyroscope>(device, 1, 1, {1,2,3}));
     RemoteStateSnapshot<GyroscopeData> front; assert(manager.Read<FrontGyroscope>(device, front));
+    assert(front.Availability.Availability == StateAvailability::Available);
+    assert(front.Availability.Reason == StateAvailabilityReason::None);
     assert(manager.Apply<RearGyroscope>(device, 1, 1, {4,5,6}));
     assert(manager.Apply<FrontGyroscope>(device, 1, 2, {1,2,3}));
     assert(!manager.Apply<FrontGyroscope>(device, 1, 2, {9,9,9}));
-    assert(manager.SetAvailability(device, RemoteDeviceAvailability::Connected));
+    assert(manager.ApplyAvailability<FrontGyroscope>(device, StateAvailability::Unavailable, StateAvailabilityReason::SourceUnbound));
+    assert(manager.Read<FrontGyroscope>(device, front));
+    assert(front.Availability.Availability == StateAvailability::Unavailable);
+    assert(front.Availability.Reason == StateAvailabilityReason::SourceUnbound);
+    assert(manager.ApplyAvailability<FrontGyroscope>(device, StateAvailability::Available));
+    assert(manager.SetReachability(device, StateSourceReachability::Unreachable));
+    assert(manager.Read<FrontGyroscope>(device, front));
+    assert(front.Availability.Availability == StateAvailability::Unavailable);
+    assert(front.Availability.Reason == StateAvailabilityReason::SourceUnreachable);
 
     StateSubscriptionRegistry<3> subscriptions;
     auto subscriptionHandle = subscriptions.RegisterObserver(static_cast<IStateSubscriptionRegistryObserver*>(&observer));
