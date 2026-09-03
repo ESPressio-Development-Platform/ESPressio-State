@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "ESPressio_DeviceIdentifier.hpp"
+#include "ESPressio_StateAvailability.hpp"
 #include "ESPressio_StateCodec.hpp"
 #include "ESPressio_StateTransport.hpp"
 
@@ -14,12 +15,9 @@ namespace State {
 /// <summary>Encodes and decodes the versioned binary wire protocol used by State family transports.</summary>
 class StateProtocol final {
 public:
-    /// <summary>Two-byte protocol discriminator corresponding to ASCII <c>ST</c>.</summary>
     static constexpr uint16_t Magic = 0x5354;
-    /// <summary>Current State family wire-protocol version.</summary>
     static constexpr uint8_t Version = 2;
 
-    /// <summary>Identifies one State family message.</summary>
     enum class MessageType : uint8_t {
         Publication = 1,
         Availability = 2,
@@ -30,14 +28,21 @@ public:
         UnsubscribeResult = 7
     };
 
-    /// <summary>Decoded or encodable State control-plane message.</summary>
+    /// <summary>Control message containing only one State identity.</summary>
     struct ControlMessage {
         MessageType Type = MessageType::Subscribe;
         DeviceIdentifier Device{};
         StateTypeId TypeId = 0;
     };
 
-    /// <summary>Decoded publication header plus a non-owning view of its encoded value.</summary>
+    /// <summary>Authoritative source-owned availability for one State identity.</summary>
+    struct AvailabilityMessage {
+        DeviceIdentifier Device{};
+        StateTypeId TypeId = 0;
+        StateAvailability Availability = StateAvailability::Unavailable;
+        StateAvailabilityReason Reason = StateAvailabilityReason::SourceUnbound;
+    };
+
     struct ParsedUpdate {
         StateUpdateHeader Header{};
         const uint8_t* Payload = nullptr;
@@ -47,6 +52,7 @@ public:
     static constexpr std::size_t CommonHeaderSize = 4;
     static constexpr std::size_t UpdateHeaderSize = 42;
     static constexpr std::size_t ControlSize = 28;
+    static constexpr std::size_t AvailabilitySize = 30;
 
 private:
     static void Write16(uint8_t* output, uint16_t value) {
@@ -86,9 +92,15 @@ private:
         return true;
     }
     static bool IsControlMessageType(MessageType type) {
-        return type == MessageType::Availability || type == MessageType::Subscribe ||
-               type == MessageType::Unsubscribe || type == MessageType::Resynchronize ||
-               type == MessageType::SubscribeResult || type == MessageType::UnsubscribeResult;
+        return type == MessageType::Subscribe || type == MessageType::Unsubscribe ||
+               type == MessageType::Resynchronize || type == MessageType::SubscribeResult ||
+               type == MessageType::UnsubscribeResult;
+    }
+    static bool IsAvailabilityValue(uint8_t value) {
+        return value <= static_cast<uint8_t>(StateAvailability::Expired);
+    }
+    static bool IsAvailabilityReasonValue(uint8_t value) {
+        return value <= static_cast<uint8_t>(StateAvailabilityReason::SourceUnreachable);
     }
 
 public:
@@ -96,7 +108,6 @@ public:
         return ReadCommon(input, size, type);
     }
 
-    /// <summary>Encodes one latest-authoritative-fact State publication.</summary>
     template<typename TDefinition>
     static bool EncodeUpdate(const StateUpdate<StateValueType<TDefinition>>& update, uint8_t* output, std::size_t capacity, std::size_t& size) {
         if (capacity < UpdateHeaderSize) return false;
@@ -135,8 +146,33 @@ public:
         return StateCodec<TDefinition>::Decode(update.Payload, update.PayloadSize, value);
     }
 
+    /// <summary>Encodes authoritative availability independently of source reachability.</summary>
+    static bool EncodeAvailability(const AvailabilityMessage& message, uint8_t* output, std::size_t capacity, std::size_t& size) {
+        if (!message.Device || message.TypeId == 0 || capacity < AvailabilitySize) return false;
+        if (!WriteCommon(MessageType::Availability, output, capacity)) return false;
+        std::memcpy(output + 4, message.Device.Bytes().data(), DeviceIdentifier::Size);
+        Write64(output + 20, message.TypeId);
+        output[28] = static_cast<uint8_t>(message.Availability);
+        output[29] = static_cast<uint8_t>(message.Reason);
+        size = AvailabilitySize;
+        return true;
+    }
+
+    static bool DecodeAvailability(const uint8_t* input, std::size_t size, AvailabilityMessage& message) {
+        MessageType type;
+        if (!ReadCommon(input, size, type) || type != MessageType::Availability || size != AvailabilitySize) return false;
+        if (!IsAvailabilityValue(input[28]) || !IsAvailabilityReasonValue(input[29])) return false;
+        DeviceIdentifier::Storage device{};
+        std::memcpy(device.data(), input + 4, device.size());
+        message.Device = DeviceIdentifier(device);
+        message.TypeId = Read64(input + 20);
+        message.Availability = static_cast<StateAvailability>(input[28]);
+        message.Reason = static_cast<StateAvailabilityReason>(input[29]);
+        return static_cast<bool>(message.Device) && message.TypeId != 0;
+    }
+
     static bool EncodeControl(const ControlMessage& control, uint8_t* output, std::size_t capacity, std::size_t& size) {
-        if (!IsControlMessageType(control.Type)) return false;
+        if (!IsControlMessageType(control.Type) || !control.Device || control.TypeId == 0) return false;
         if (capacity < ControlSize || !WriteCommon(control.Type, output, capacity)) return false;
         std::memcpy(output + 4, control.Device.Bytes().data(), DeviceIdentifier::Size);
         Write64(output + 20, control.TypeId);
@@ -152,7 +188,7 @@ public:
         control.Type = type;
         control.Device = DeviceIdentifier(device);
         control.TypeId = Read64(input + 20);
-        return true;
+        return static_cast<bool>(control.Device) && control.TypeId != 0;
     }
 };
 
