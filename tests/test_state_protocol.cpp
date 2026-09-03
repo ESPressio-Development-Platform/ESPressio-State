@@ -34,13 +34,33 @@ int main() {
     std::array<uint8_t, 128> buffer{};
     std::size_t size = 0;
 
-    const StateProtocol::ControlMessage subscribeResult{StateProtocol::MessageType::SubscribeResult, device, TestState::Id};
+    const StateProtocol::ControlMessage subscribeResult{
+        StateProtocol::MessageType::SubscribeResult,
+        device,
+        TestState::Id
+    };
     assert(StateProtocol::EncodeControl(subscribeResult, buffer.data(), buffer.size(), size));
     StateProtocol::ControlMessage decoded{};
     assert(StateProtocol::DecodeControl(buffer.data(), size, decoded));
     assert(decoded.Type == StateProtocol::MessageType::SubscribeResult);
     assert(decoded.Device == device);
     assert(decoded.TypeId == TestState::Id);
+
+    const StateProtocol::AvailabilityMessage unavailable{
+        device,
+        TestState::Id,
+        StateAvailability::Unavailable,
+        StateAvailabilityReason::SourceUnbound
+    };
+    assert(StateProtocol::EncodeAvailability(unavailable, buffer.data(), buffer.size(), size));
+    assert(size == StateProtocol::AvailabilitySize);
+    StateProtocol::AvailabilityMessage decodedAvailability{};
+    assert(StateProtocol::DecodeAvailability(buffer.data(), size, decodedAvailability));
+    assert(decodedAvailability.Device == device);
+    assert(decodedAvailability.TypeId == TestState::Id);
+    assert(decodedAvailability.Availability == StateAvailability::Unavailable);
+    assert(decodedAvailability.Reason == StateAvailabilityReason::SourceUnbound);
+    assert(!StateProtocol::DecodeControl(buffer.data(), size, decoded));
 
     StateUpdate<uint32_t> publication{};
     publication.Header.Origin = device;
