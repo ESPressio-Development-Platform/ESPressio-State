@@ -56,15 +56,23 @@ struct RemoteStateTuple<StateContract<TDefinitions...>> {
 };
 
 /// <summary>Maintains bounded typed State replicas and source reachability for remote devices.</summary>
+/// <typeparam name="TContract">Closed set of State definitions accepted by the manager.</typeparam>
+/// <typeparam name="TMaximumDevices">Maximum number of remote devices retained simultaneously.</typeparam>
+/// <typeparam name="TMaximumObservers">Maximum simultaneous lifecycle observer registrations.</typeparam>
 /// <remarks>
 /// Authoritative State availability and device reachability are stored separately.
 /// Every read and availability notification exposes their effective combination.
+/// Device storage and observer registration are independently bounded.
 /// </remarks>
-template<typename TContract, std::size_t TMaximumDevices>
+template<typename TContract, std::size_t TMaximumDevices, std::size_t TMaximumObservers = 8>
 class RemoteStateManager final {
+    static_assert(TMaximumDevices > 0, "RemoteStateManager device capacity must be non-zero");
+    static_assert(TMaximumObservers > 0, "RemoteStateManager observer capacity must be non-zero");
+
 public:
     using Contract = TContract;
     static constexpr std::size_t MaximumDevices = TMaximumDevices;
+    static constexpr std::size_t MaximumObservers = TMaximumObservers;
 
 private:
     class ManagerObservable final : public Observable::ThreadSafeObservable {
@@ -238,10 +246,14 @@ private:
 public:
     RemoteStateManager() = default;
 
+    /// <summary>Registers a lifecycle observer when the manager's bounded observer capacity permits.</summary>
     Observable::ObserverHandlePtr RegisterObserver(IRemoteStateManagerObserver* observer) {
-        if (!EnsureRuntimeStorage()) return {};
+        if (observer == nullptr || !EnsureRuntimeStorage()) return {};
+        std::lock_guard<System::Synchronization::RecursiveMutex> lock(_mutex);
+        if (_observable->GetObserverCount() >= TMaximumObservers) return {};
         return _observable->template RegisterObserverAs<IRemoteStateManagerObserver>(observer);
     }
+
     void UnregisterObserver(Observable::IObserver* observer) {
         if (!EnsureRuntimeStorage()) return;
         _observable->UnregisterObserver(observer);
