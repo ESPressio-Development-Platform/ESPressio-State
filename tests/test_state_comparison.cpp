@@ -24,7 +24,10 @@ int main(){
     DeviceIdentifier::Storage identity{}; identity[15]=1; const DeviceIdentifier device(identity);
     StatePublisher<Contract> publisher(device); PublisherObserver po; auto ph=publisher.RegisterObserver(&po);
     AnalogValue authoritative{100.0f}; assert(publisher.RegisterSource<DeadbandAnalogState>([&]{return authoritative;}));
-    assert(publisher.Publish<DeadbandAnalogState>()); authoritative={100.2f}; assert(!publisher.Publish<DeadbandAnalogState>()); authoritative={101.0f}; assert(publisher.Publish<DeadbandAnalogState>()); authoritative={102.0f}; assert(publisher.Publish<DeadbandAnalogState>()); assert(po.Published==3);
+    assert(publisher.Publish<DeadbandAnalogState>()); assert(po.Published==1);
+    authoritative={100.2f}; assert(publisher.Publish<DeadbandAnalogState>()); assert(po.Published==1);
+    authoritative={101.0f}; assert(publisher.Publish<DeadbandAnalogState>()); assert(po.Published==2);
+    authoritative={102.0f}; assert(publisher.Publish<DeadbandAnalogState>()); assert(po.Published==3);
     RemoteStateManager<Contract,1> manager; ComparisonObserver observer; auto h=manager.RegisterObserver(static_cast<IRemoteStateManagerObserver*>(&observer));
     assert(manager.Apply<DeadbandAnalogState>(device,1,1,{100.0f})); assert(manager.Apply<DeadbandAnalogState>(device,1,2,{100.2f})); assert(manager.Apply<DeadbandAnalogState>(device,1,3,{101.0f})); assert(observer.Accepted==3 && observer.Changed==3);
     return 0;
