@@ -5,23 +5,25 @@
 #include <ESPressio_IObserver.hpp>
 
 #include "ESPressio_DeviceIdentifier.hpp"
+#include "ESPressio_StateAddress.hpp"
+#include "ESPressio_StateAvailability.hpp"
 #include "ESPressio_StateContract.hpp"
 
 namespace ESPressio {
 namespace State {
 
-enum class RemoteDeviceAvailability : uint8_t;
 enum class StateSubscriptionScope : uint8_t;
 template<typename TValue> struct StateUpdate;
 
-/// <summary>Observes registration, acceptance, rejection, and availability events from a remote-state manager.</summary>
+/// <summary>Observes registration, replica acceptance/rejection, State availability, and source reachability.</summary>
 class IRemoteStateManagerObserver : public Observable::IObserver {
 public:
     virtual ~IRemoteStateManagerObserver() = default;
     virtual void OnRemoteStateDeviceRegistered(const DeviceIdentifier&) {}
     virtual void OnRemoteStateAccepted(const DeviceIdentifier&, StateTypeId, StateEpoch, StateRevision, bool) {}
     virtual void OnRemoteStateRejected(const DeviceIdentifier&, StateTypeId, StateEpoch, StateRevision) {}
-    virtual void OnRemoteStateAvailabilityChanged(const DeviceIdentifier&, RemoteDeviceAvailability, RemoteDeviceAvailability) {}
+    virtual void OnRemoteStateAvailabilityChanged(const StateAddress&, StateAvailabilityStatus, StateAvailabilityStatus) {}
+    virtual void OnRemoteStateReachabilityChanged(const DeviceIdentifier&, StateSourceReachability, StateSourceReachability) {}
 };
 
 template<typename TDefinition>
@@ -29,13 +31,30 @@ class IRemoteStateObserver : public Observable::IObserver {
 public:
     using Value = StateValueType<TDefinition>;
     virtual ~IRemoteStateObserver() = default;
-    virtual void OnRemoteStateChanged(StateTag<TDefinition>, const DeviceIdentifier&, bool, const Value&, const Value&, StateEpoch, StateRevision, RemoteDeviceAvailability) {}
+    virtual void OnRemoteStateChanged(
+        StateTag<TDefinition>,
+        const DeviceIdentifier&,
+        bool,
+        const Value&,
+        const Value&,
+        StateEpoch,
+        StateRevision,
+        StateAvailabilityStatus
+    ) {}
 };
 
-class IRemoteDeviceAvailabilityObserver : public Observable::IObserver {
+/// <summary>Observes effective availability changes of remote State identities.</summary>
+class IRemoteStateAvailabilityObserver : public Observable::IObserver {
 public:
-    virtual ~IRemoteDeviceAvailabilityObserver() = default;
-    virtual void OnRemoteDeviceAvailabilityChanged(const DeviceIdentifier&, RemoteDeviceAvailability, RemoteDeviceAvailability) {}
+    virtual ~IRemoteStateAvailabilityObserver() = default;
+    virtual void OnRemoteStateAvailabilityChanged(const StateAddress&, StateAvailabilityStatus, StateAvailabilityStatus) {}
+};
+
+/// <summary>Observes reachability changes for authoritative remote devices.</summary>
+class IRemoteStateReachabilityObserver : public Observable::IObserver {
+public:
+    virtual ~IRemoteStateReachabilityObserver() = default;
+    virtual void OnRemoteStateReachabilityChanged(const DeviceIdentifier&, StateSourceReachability, StateSourceReachability) {}
 };
 
 class IStateSubscriptionRegistryObserver : public Observable::IObserver {
