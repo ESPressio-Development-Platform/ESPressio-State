@@ -25,13 +25,29 @@ struct RearGyroscope {
 using RemoteContract = StateContract<FrontGyroscope, RearGyroscope>;
 RemoteStateManager<RemoteContract, 4> remoteState;
 
+static DeviceIdentifier ExampleRemoteDevice() {
+    // DeviceIdentifier is the permanent platform identity imported from
+    // ESPressio-System. Transport adapters obtain/validate this identity from
+    // their authenticated context rather than deriving it inside State.
+    DeviceIdentifier::Storage bytes{};
+    bytes[15] = 0x42;
+    return DeviceIdentifier(bytes);
+}
+
 void setup() {
     Serial.begin(115200);
 
-    const uint8_t remoteMac[6] = {0x64, 0xB7, 0x08, 0x85, 0x63, 0x3D};
-    const DeviceIdentifier remoteDevice = DeviceIdentifier::FromMacAddress(remoteMac);
+    const DeviceIdentifier remoteDevice = ExampleRemoteDevice();
 
-    // In real use this value arrives from a State transport adapter.
+    // In real use, reachability is supplied by the active transport/Mesh
+    // integration independently of the source-authoritative State value.
+    remoteState.SetReachability(
+        remoteDevice,
+        StateSourceReachability::Reachable
+    );
+
+    // In real use this authoritative publication arrives from a State
+    // transport adapter after source/subscription validation.
     remoteState.Apply<FrontGyroscope>(
         remoteDevice,
         1,
