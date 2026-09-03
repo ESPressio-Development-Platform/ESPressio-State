@@ -28,7 +28,6 @@ public:
         UnsubscribeResult = 7
     };
 
-    /// <summary>Control message containing only one State identity.</summary>
     struct ControlMessage {
         MessageType Type = MessageType::Subscribe;
         DeviceIdentifier Device{};
@@ -36,6 +35,7 @@ public:
     };
 
     /// <summary>Authoritative source-owned availability for one State identity.</summary>
+    /// <remarks>SourceUnreachable is never authoritative wire state; it is derived locally from transport/Mesh reachability.</remarks>
     struct AvailabilityMessage {
         DeviceIdentifier Device{};
         StateTypeId TypeId = 0;
@@ -102,6 +102,13 @@ private:
     static bool IsAvailabilityReasonValue(uint8_t value) {
         return value <= static_cast<uint8_t>(StateAvailabilityReason::SourceUnreachable);
     }
+    static bool IsAuthoritativeAvailability(StateAvailability availability, StateAvailabilityReason reason) {
+        if (reason == StateAvailabilityReason::SourceUnreachable) return false;
+        if (availability == StateAvailability::Unavailable) {
+            return reason == StateAvailabilityReason::None || reason == StateAvailabilityReason::SourceUnbound;
+        }
+        return reason == StateAvailabilityReason::None;
+    }
 
 public:
     static bool GetMessageType(const uint8_t* input, std::size_t size, MessageType& type) {
@@ -146,9 +153,9 @@ public:
         return StateCodec<TDefinition>::Decode(update.Payload, update.PayloadSize, value);
     }
 
-    /// <summary>Encodes authoritative availability independently of source reachability.</summary>
     static bool EncodeAvailability(const AvailabilityMessage& message, uint8_t* output, std::size_t capacity, std::size_t& size) {
         if (!message.Device || message.TypeId == 0 || capacity < AvailabilitySize) return false;
+        if (!IsAuthoritativeAvailability(message.Availability, message.Reason)) return false;
         if (!WriteCommon(MessageType::Availability, output, capacity)) return false;
         std::memcpy(output + 4, message.Device.Bytes().data(), DeviceIdentifier::Size);
         Write64(output + 20, message.TypeId);
@@ -168,7 +175,8 @@ public:
         message.TypeId = Read64(input + 20);
         message.Availability = static_cast<StateAvailability>(input[28]);
         message.Reason = static_cast<StateAvailabilityReason>(input[29]);
-        return static_cast<bool>(message.Device) && message.TypeId != 0;
+        return static_cast<bool>(message.Device) && message.TypeId != 0 &&
+               IsAuthoritativeAvailability(message.Availability, message.Reason);
     }
 
     static bool EncodeControl(const ControlMessage& control, uint8_t* output, std::size_t capacity, std::size_t& size) {
