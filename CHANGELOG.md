@@ -15,7 +15,8 @@ Active development baseline. Package version numbering is intentionally unchange
 - Unified `StatePublisher` lifecycle using `Bind`, `Unbind`, `NotifyChanged` and `Snapshot`; no duplicate local canonical value table or `LastPublished` shadow copy is retained.
 - Retain/Discard unbinding semantics: Retain preserves epoch/revision lineage, while Discard causes the next bind to begin a new epoch.
 - Explicit authoritative local availability lifecycle (`Available` and `Unavailable / SourceUnbound`) separate from value publication.
-- Same-State publication notification serialization with bounded latest-fact coalescing for changes raised from inside an active publication callback.
+- Same-State local publication/lifecycle notification serialization with bounded latest-fact coalescing for adjacent deferred publications.
+- Bounded non-reentrant `RemoteStateManager` notification batching covering accepted/rejected revisions, authoritative/effective availability, device registration and reachability-driven transitions.
 - Bounded observer-registration capacities, independently configurable from data capacities, across publisher, remote manager, subscription registries and the optional deferred observer thread.
 - Bounded typed `RemoteStateManager` replicas with epoch/revision ordering.
 - Separate source-authoritative State availability and transport-derived source reachability, combined into effective remote availability for consumers.
