@@ -110,11 +110,12 @@ jobs:
               ESPressio::State::DeviceIdentifier::Storage identity{};
               identity[15] = 1;
               const ESPressio::State::DeviceIdentifier device(identity);
+              remoteState.SetReachability(device, ESPressio::State::StateSourceReachability::Reachable);
               remoteState.Apply<LedState>(device,1,1,true);
               remoteState.Apply<CounterState>(device,1,1,42);
               const char* name = nullptr;
               ESPressio::State::StateIntrospection<Contract>::TryGetName(LedState::Id,name);
-              ESPressio::State::StateSerialization<Contract>::ForEachRemoteState(remoteState,[](const auto& record){ (void)record.TypeId; (void)record.PayloadSize; });
+              ESPressio::State::StateSerialization<Contract>::ForEachRemoteState(remoteState,[](const auto& record){ (void)record.TypeId; (void)record.PayloadSize; (void)record.Availability; (void)record.Reachability; });
           }
           void loop() {}
           EOF
@@ -151,16 +152,19 @@ jobs:
           #include <ESPressio_RemoteStateObserverThread.hpp>
           struct LedState { using Value = bool; static constexpr ESPressio::State::StateTypeId Id = 1; };
           using Contract = ESPressio::State::StateContract<LedState>;
-          class LedObserver final : public ESPressio::State::IRemoteStateObserver<LedState>, public ESPressio::State::IRemoteDeviceAvailabilityObserver {
+          class LedObserver final : public ESPressio::State::IRemoteStateObserver<LedState>, public ESPressio::State::IRemoteStateAvailabilityObserver, public ESPressio::State::IRemoteStateReachabilityObserver {
           public:
-              void OnRemoteStateChanged(ESPressio::State::StateTag<LedState>, const ESPressio::State::DeviceIdentifier&, bool hasPreviousValue, const bool& previousValue, const bool& latestValue, ESPressio::State::StateEpoch, ESPressio::State::StateRevision, ESPressio::State::RemoteDeviceAvailability) override { (void)hasPreviousValue; (void)previousValue; (void)latestValue; }
-              void OnRemoteDeviceAvailabilityChanged(const ESPressio::State::DeviceIdentifier&, ESPressio::State::RemoteDeviceAvailability, ESPressio::State::RemoteDeviceAvailability) override {}
+              void OnRemoteStateChanged(ESPressio::State::StateTag<LedState>, const ESPressio::State::DeviceIdentifier&, bool hasPreviousValue, const bool& previousValue, const bool& latestValue, ESPressio::State::StateEpoch, ESPressio::State::StateRevision, ESPressio::State::StateAvailabilityStatus) override { (void)hasPreviousValue; (void)previousValue; (void)latestValue; }
+              void OnRemoteStateAvailabilityChanged(const ESPressio::State::StateAddress&, ESPressio::State::StateAvailabilityStatus, ESPressio::State::StateAvailabilityStatus) override {}
+              void OnRemoteStateReachabilityChanged(const ESPressio::State::DeviceIdentifier&, ESPressio::State::StateSourceReachability, ESPressio::State::StateSourceReachability) override {}
           };
           ESPressio::State::RemoteStateManager<Contract,2> remoteState;
           ESPressio::State::RemoteStateObserverThread<Contract,2> observerThread(remoteState);
           LedObserver observer;
-          ESPressio::Observable::ObserverHandlePtr observerHandle;
-          void setup(){ observerHandle=observerThread.RegisterStateObserver<LedState>(&observer); observerThread.Prepare(); }
+          ESPressio::Observable::ObserverHandlePtr stateObserverHandle;
+          ESPressio::Observable::ObserverHandlePtr availabilityObserverHandle;
+          ESPressio::Observable::ObserverHandlePtr reachabilityObserverHandle;
+          void setup(){ stateObserverHandle=observerThread.RegisterStateObserver<LedState>(&observer); availabilityObserverHandle=observerThread.RegisterAvailabilityObserver(&observer); reachabilityObserverHandle=observerThread.RegisterReachabilityObserver(&observer); observerThread.Prepare(); }
           void loop() {}
           EOF
       - run: pio run -d /tmp/state-observer
