@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <cstring>
 
+#include <ESPressio_Primitive.hpp>
+
 #include "ESPressio_DeviceIdentifier.hpp"
 #include "ESPressio_StateAvailability.hpp"
 #include "ESPressio_StateCodec.hpp"
@@ -11,6 +13,9 @@
 
 namespace ESPressio {
 namespace State {
+
+/// <summary>Stable ESPressio primitive-family identifier for State facts.</summary>
+inline constexpr Primitive::PrimitiveFamilyId StateFamilyId = Primitive::FamilyIds::State;
 
 /// <summary>Encodes and decodes the versioned binary wire protocol used by State family transports.</summary>
 class StateProtocol final {

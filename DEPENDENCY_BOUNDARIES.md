@@ -7,9 +7,10 @@ ESPressio State owns authoritative-fact, local binding and remote-replica semant
 State core depends on:
 
 - `ESPressio-System` for canonical `DeviceIdentifier`, synchronization and memory abstractions;
+- `ESPressio-Primitive` for the stable State family identity and common conceptual-message vocabulary;
 - `ESPressio-Observable` for bounded multi-observer lifecycle/publication surfaces.
 
-The propagation branch pins System to `structural_realignment_propagation_ESPressio-Mesh` and Observable to its current `structural_realignment` Working Branch.
+The propagation branch pins System and Primitive to `structural_realignment_propagation_ESPressio-Mesh` and Observable to its current `structural_realignment` Working Branch.
 
 State core owns:
 

@@ -8,8 +8,13 @@
         "url": "https://espressio.org"
     },
     "build": {
-        "flags": ["-std=gnu++17","-DESPRESSIO_STATE"],
-        "unflags": ["-std=gnu++11"]
+        "flags": [
+            "-std=gnu++17",
+            "-DESPRESSIO_STATE"
+        ],
+        "unflags": [
+            "-std=gnu++11"
+        ]
     },
     "repository": {
         "type": "git",
@@ -23,6 +28,11 @@
         {
             "name": "ESPressio-System",
             "version": "https://github.com/ESPressio-Development-Platform/ESPressio-System.git#structural_realignment_propagation_ESPressio-Mesh",
+            "platforms": "*"
+        },
+        {
+            "name": "ESPressio-Primitive",
+            "version": "https://github.com/ESPressio-Development-Platform/ESPressio-Primitive.git#structural_realignment_propagation_ESPressio-Mesh",
             "platforms": "*"
         },
         {

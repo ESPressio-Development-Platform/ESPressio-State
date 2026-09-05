@@ -8,6 +8,7 @@ set(COMPONENT_ADD_INCLUDEDIRS
 
 set(COMPONENT_REQUIRES
     "ESPressio_Observable"
+    "ESPressio_Primitive"
 )
 
 register_component()

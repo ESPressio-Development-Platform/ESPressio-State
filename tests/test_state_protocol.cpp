@@ -27,6 +27,8 @@ struct ESPressio::State::StateCodec<TestState> {
 };
 
 int main() {
+    static_assert(StateFamilyId == ESPressio::Primitive::FamilyIds::State);
+
     DeviceIdentifier::Storage bytes{};
     bytes[15] = 0x42;
     const DeviceIdentifier device(bytes);

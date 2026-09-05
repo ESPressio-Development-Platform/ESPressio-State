@@ -12,6 +12,12 @@ set(
     "Path to ESPressio System src"
 )
 set(
+    ESPRESSIO_PRIMITIVE_DIR
+    "${CMAKE_CURRENT_LIST_DIR}/../../ESPressio-Primitive/src"
+    CACHE PATH
+    "Path to ESPressio Primitive src"
+)
+set(
     ESPRESSIO_OBSERVABLE_DIR
     "${CMAKE_CURRENT_LIST_DIR}/../../ESPressio-Observable/src"
     CACHE PATH
@@ -21,6 +27,9 @@ set(
 if(NOT EXISTS "${ESPRESSIO_SYSTEM_DIR}/ESPressio_Memory.hpp")
     message(FATAL_ERROR "ESPressio System headers not found at ${ESPRESSIO_SYSTEM_DIR}")
 endif()
+if(NOT EXISTS "${ESPRESSIO_PRIMITIVE_DIR}/ESPressio_Primitive.hpp")
+    message(FATAL_ERROR "ESPressio Primitive headers not found at ${ESPRESSIO_PRIMITIVE_DIR}")
+endif()
 if(NOT EXISTS "${ESPRESSIO_OBSERVABLE_DIR}/ESPressio_Observable.hpp")
     message(FATAL_ERROR "ESPressio Observable headers not found at ${ESPRESSIO_OBSERVABLE_DIR}")
 endif()
@@ -28,6 +37,7 @@ endif()
 set(ESPRESSIO_STATE_TEST_INCLUDE_DIRS
     ../src
     ${ESPRESSIO_SYSTEM_DIR}
+    ${ESPRESSIO_PRIMITIVE_DIR}
     ${ESPRESSIO_OBSERVABLE_DIR}
 )
 

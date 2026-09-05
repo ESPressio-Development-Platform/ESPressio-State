@@ -8,6 +8,8 @@ This propagation branch implements the platform structural realignment toward th
 
 ## Identity
 
+State is assigned stable primitive family `StateFamilyId` (`0x0004`).
+
 State uses the canonical permanent `ESPressio::System::DeviceIdentifier`; it does not own or derive a second device identity and contains no MAC/radio identity semantics.
 
 One State is addressed by:
@@ -218,6 +220,7 @@ Mandatory State dependencies on this propagation branch are:
 
 ```text
 ESPressio-System     structural_realignment_propagation_ESPressio-Mesh
+ESPressio-Primitive  structural_realignment_propagation_ESPressio-Mesh
 ESPressio-Observable structural_realignment
 ```
 
