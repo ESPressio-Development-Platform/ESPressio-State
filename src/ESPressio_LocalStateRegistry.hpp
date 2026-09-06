@@ -10,6 +10,7 @@
 #include <ESPressio_Synchronization.hpp>
 
 #include "ESPressio_StateContract.hpp"
+#include "ESPressio_StateRuntimeEpoch.hpp"
 
 namespace ESPressio {
 namespace State {
@@ -53,6 +54,8 @@ struct LocalStateView final {
 /// authority, and requires NotifyChanged to advance the distributed revision after authoritative mutation.
 /// Initial binding establishes revision 1. Rebinding a retained registration advances the existing
 /// revision before exposing the new source so the same epoch/revision can never denote two different values.
+/// A configured StateRuntimeEpoch is captured when the registry is constructed and becomes the first epoch
+/// used by each State definition; without one, the historical epoch-one start remains unchanged.
 /// </remarks>
 template<typename TContract>
 class LocalStateRegistry final {
@@ -76,6 +79,7 @@ private:
     };
 
     typename SlotTuple<TContract>::Type _slots{};
+    StateEpoch _runtimeInitialEpoch{StateRuntimeEpoch::Current()};
     mutable System::Synchronization::RecursiveMutex _mutex;
 
     static StateEpoch NextEpoch(StateEpoch current) noexcept {
@@ -143,9 +147,10 @@ public:
 
     /// <summary>Binds one application-owned value as the sole local authority for its State definition.</summary>
     /// <remarks>
-    /// A new lineage begins at epoch N/revision 1. Rebinding after Retain preserves the epoch and advances
-    /// the revision once before exposing the replacement source, preventing an old revision from acquiring
-    /// a different value. Binding fails if the revision space is exhausted.
+    /// A new lineage begins at the configured runtime epoch (or epoch one when no runtime epoch was configured) and
+    /// revision 1. Rebinding after Retain preserves the epoch and advances the revision once before exposing the
+    /// replacement source, preventing an old revision from acquiring a different value. Binding fails if the revision
+    /// space is exhausted. A later Discard still advances to a fresh epoch from the current lineage.
     /// </remarks>
     template<typename TDefinition>
     bool Bind(StateValueType<TDefinition>& source) {
@@ -154,7 +159,9 @@ public:
         if (slot.Bound) return false;
 
         if (slot.NeedsNewEpoch) {
-            slot.Epoch = NextEpoch(slot.Epoch);
+            slot.Epoch = slot.Epoch == 0U && _runtimeInitialEpoch != 0U
+                ? _runtimeInitialEpoch
+                : NextEpoch(slot.Epoch);
             slot.Revision = 1;
             slot.Retained = false;
             slot.NeedsNewEpoch = false;
