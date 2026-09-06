@@ -16,6 +16,7 @@ struct EnabledState {
 using Contract = StateContract<CounterState, EnabledState>;
 
 int main() {
+    // Backward-compatible unconfigured runtimes still begin at epoch one.
     LocalStateRegistry<Contract> registry;
     uint32_t counter = 10;
 
@@ -75,6 +76,27 @@ int main() {
     }
     assert(!registry.Registration<EnabledState>().Bound);
     assert(registry.Registration<EnabledState>().Retained);
+
+    // A boot/runtime may seed every subsequently constructed registry with one fresh non-zero epoch.
+    constexpr StateEpoch bootEpoch = 0x4A17B20DU;
+    assert(StateRuntimeEpoch::Configure(bootEpoch));
+    assert(StateRuntimeEpoch::Configure(bootEpoch));
+    assert(!StateRuntimeEpoch::Configure(static_cast<StateEpoch>(bootEpoch + 1U)));
+
+    LocalStateRegistry<Contract> restartedRegistry;
+    uint32_t restartedCounter = 1U;
+    bool restartedEnabled = true;
+    assert(restartedRegistry.Bind<CounterState>(restartedCounter));
+    assert(restartedRegistry.Bind<EnabledState>(restartedEnabled));
+    assert(restartedRegistry.Registration<CounterState>().Epoch == bootEpoch);
+    assert(restartedRegistry.Registration<CounterState>().Revision == 1U);
+    assert(restartedRegistry.Registration<EnabledState>().Epoch == bootEpoch);
+
+    // Discard begins a new lineage relative to the captured runtime epoch.
+    assert(restartedRegistry.Unbind<CounterState>(StateUnbindMode::Discard));
+    assert(restartedRegistry.Bind<CounterState>(restartedCounter));
+    assert(restartedRegistry.Registration<CounterState>().Epoch == bootEpoch + 1U);
+    assert(restartedRegistry.Registration<CounterState>().Revision == 1U);
 
     return 0;
 }
