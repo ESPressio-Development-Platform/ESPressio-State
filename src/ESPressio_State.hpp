@@ -2,6 +2,7 @@
 
 #include "ESPressio_DeviceIdentifier.hpp"
 #include "ESPressio_StateContract.hpp"
+#include "ESPressio_StateRuntimeEpoch.hpp"
 #include "ESPressio_StateAddress.hpp"
 #include "ESPressio_StateAvailability.hpp"
 #include "ESPressio_StateComparison.hpp"
