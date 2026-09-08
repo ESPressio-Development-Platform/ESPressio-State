@@ -12,6 +12,15 @@ namespace State {
 /// permanent authoritative device and TypeId identifies the semantic State
 /// definition. There is no separate source identifier or transport address.
 /// </remarks>
+/**
+ * ESPressio Memory Audit
+ * Members:
+ * - Device (DeviceIdentifier): 16 bytes [0 bytes dynamic allocation]
+ * - TypeId (StateTypeId): 8 bytes [0 bytes dynamic allocation]
+ * Total Memory: 24 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 struct StateAddress final {
     DeviceIdentifier Device{};
     StateTypeId TypeId = 0;

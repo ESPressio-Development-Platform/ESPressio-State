@@ -8,6 +8,13 @@ namespace State {
 /// <summary>Defines semantic equality for values belonging to one state definition.</summary>
 /// <typeparam name="TDefinition">State definition whose meaningful-change semantics are evaluated.</typeparam>
 /// <remarks>The default policy delegates to the value type's equality operator. Specialize this policy per state definition to implement tolerance, deadband, hysteresis, noise rejection, or other domain-specific comparison semantics.</remarks>
+/**
+ * ESPressio Memory Audit
+ * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
+ * Total Memory: 1 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 template<typename TDefinition>
 struct StateComparison {
     /// <summary>Value type represented by the state definition.</summary>

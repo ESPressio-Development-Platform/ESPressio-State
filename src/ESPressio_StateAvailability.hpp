@@ -6,6 +6,13 @@ namespace ESPressio {
 namespace State {
 
 /// <summary>Authoritative/effective availability of one State value.</summary>
+/**
+ * ESPressio Memory Audit
+ * Underlying storage: 1 bytes
+ * Total Memory: 1 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 enum class StateAvailability : uint8_t {
     Available = 0,
     Stale,
@@ -14,6 +21,13 @@ enum class StateAvailability : uint8_t {
 };
 
 /// <summary>Explains why a State is not presently available as a current authoritative fact.</summary>
+/**
+ * ESPressio Memory Audit
+ * Underlying storage: 1 bytes
+ * Total Memory: 1 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 enum class StateAvailabilityReason : uint8_t {
     None = 0,
     SourceUnbound,
@@ -21,6 +35,13 @@ enum class StateAvailabilityReason : uint8_t {
 };
 
 /// <summary>Transport-independent reachability of the device that owns a remote State.</summary>
+/**
+ * ESPressio Memory Audit
+ * Underlying storage: 1 bytes
+ * Total Memory: 1 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 enum class StateSourceReachability : uint8_t {
     Unknown = 0,
     Reachable,
@@ -29,6 +50,15 @@ enum class StateSourceReachability : uint8_t {
 };
 
 /// <summary>Availability plus its currently effective reason.</summary>
+/**
+ * ESPressio Memory Audit
+ * Members:
+ * - Availability (StateAvailability): 1 bytes [0 bytes dynamic allocation]
+ * - Reason (StateAvailabilityReason): 1 bytes [0 bytes dynamic allocation]
+ * Total Memory: 2 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 struct StateAvailabilityStatus final {
     StateAvailability Availability = StateAvailability::Unavailable;
     StateAvailabilityReason Reason = StateAvailabilityReason::SourceUnreachable;

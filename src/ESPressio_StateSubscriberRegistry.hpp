@@ -20,6 +20,18 @@ namespace State {
 /// <typeparam name="TMaximumSubscribers">Maximum number of remote devices retained by the registry.</typeparam>
 /// <typeparam name="TMaximumObservers">Maximum simultaneous lifecycle observer registrations.</typeparam>
 /// <remarks>Construction is allocation-free. Subscription records are bounded and materialized in external-preferred memory on first use. Observer callbacks are emitted after releasing the registry mutex, observer infrastructure is only allocated when required, and observer registration is independently bounded.</remarks>
+/**
+ * ESPressio Memory Audit
+ * Members:
+ * - _subscribers (SubscriberStorage): 12 bytes [Capacity * (17 bytes known/aligned storage + TContract::StateCount * (1 bytes)) element storage]
+ * - _mutex (std::mutex): 4 bytes [native synchronization state may allocate platform resources lazily]
+ * - _observerMutex (std::mutex): 4 bytes [native synchronization state may allocate platform resources lazily]
+ * - _observable (std::shared_ptr<RegistryObservable>): 8 bytes [shared control block (~12+ bytes; allocate_shared may co-locate object) + object 96 bytes; pointee: ThreadSafeObservable: Observable: IUntypedObservable: IObservable: enable_shared_from_this: embedded weak_ptr shares a control block when activated; pointee: ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: shared control block (~12+ bytes; allocate_shared may co-locate object) + object 20 bytes; pointee: ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: pointee: _mutex: native synchronization state may allocate platform resources lazily; pointee: ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: pointee: _condition: native condition-variable state may allocate platform synchronization resources; pointee: ThreadSafeObservable: Observable: _registrations: Capacity * (12 bytes) element storage; pointee: ThreadSafeObservable: Observable: _bindings: Capacity * (12 bytes) element storage; pointee: ThreadSafeObservable: _mutex: _owned: owned object: 4 bytes; pointee: ThreadSafeObservable: _mutex: _fallback: _mutex: native synchronization state may allocate platform resources lazily; pointee: ThreadSafeObservable: _notificationMutex: _owned: owned object: 4 bytes; pointee: ThreadSafeObservable: _notificationMutex: _fallback: _mutex: native synchronization state may allocate platform resources lazily]
+ * Total Memory: 28 bytes [_subscribers: Capacity * (17 bytes known/aligned storage + TContract::StateCount * (1 bytes)) element storage; _mutex: native synchronization state may allocate platform resources lazily; _observerMutex: native synchronization state may allocate platform resources lazily; _observable: shared control block (~12+ bytes; allocate_shared may co-locate object) + object 96 bytes; _observable: pointee: ThreadSafeObservable: Observable: IUntypedObservable: IObservable: enable_shared_from_this: embedded weak_ptr shares a control block when activated; _observable: pointee: ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: shared control block (~12+ bytes; allocate_shared may co-locate object) + object 20 bytes; _observable: pointee: ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: pointee: _mutex: native synchronization state may allocate platform resources lazily; _observable: pointee: ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: pointee: _condition: native condition-variable state may allocate platform synchronization resources; _observable: pointee: ThreadSafeObservable: Observable: _registrations: Capacity * (12 bytes) element storage; _observable: pointee: ThreadSafeObservable: Observable: _bindings: Capacity * (12 bytes) element storage; _observable: pointee: ThreadSafeObservable: _mutex: _owned: owned object: 4 bytes; _observable: pointee: ThreadSafeObservable: _mutex: _fallback: _mutex: native synchronization state may allocate platform resources lazily; _observable: pointee: ThreadSafeObservable: _notificationMutex: _owned: owned object: 4 bytes; _observable: pointee: ThreadSafeObservable: _notificationMutex: _fallback: _mutex: native synchronization state may allocate platform resources lazily]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * Confidence: medium; compile-time sizeof on the concrete target remains authoritative for ABI-sensitive/opaque members.
+ * End ESPressio Memory Audit
+ */
 template<typename TContract, std::size_t TMaximumSubscribers, std::size_t TMaximumObservers = 8>
 class StateSubscriberRegistry final {
     static_assert(TMaximumSubscribers > 0, "StateSubscriberRegistry subscriber capacity must be non-zero");
@@ -27,7 +39,15 @@ class StateSubscriberRegistry final {
 
     static constexpr auto ExternalPreferred = System::Memory::MemoryPolicy::ExternalPreferred;
 
-    class RegistryObservable final : public Observable::ThreadSafeObservable {
+        /**
+     * ESPressio Memory Audit
+     * Inherited Memory Total: 96 bytes [ThreadSafeObservable: Observable: IUntypedObservable: IObservable: enable_shared_from_this: embedded weak_ptr shares a control block when activated; ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: shared control block (~12+ bytes; allocate_shared may co-locate object) + object 20 bytes; ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: pointee: _mutex: native synchronization state may allocate platform resources lazily; ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: pointee: _condition: native condition-variable state may allocate platform synchronization resources; ThreadSafeObservable: Observable: _registrations: Capacity * (12 bytes) element storage; ThreadSafeObservable: Observable: _bindings: Capacity * (12 bytes) element storage; ThreadSafeObservable: _mutex: _owned: owned object: 4 bytes; ThreadSafeObservable: _mutex: _fallback: _mutex: native synchronization state may allocate platform resources lazily; ThreadSafeObservable: _notificationMutex: _owned: owned object: 4 bytes; ThreadSafeObservable: _notificationMutex: _fallback: _mutex: native synchronization state may allocate platform resources lazily]
+     * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
+     * Total Memory: 96 bytes [ThreadSafeObservable: Observable: IUntypedObservable: IObservable: enable_shared_from_this: embedded weak_ptr shares a control block when activated; ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: shared control block (~12+ bytes; allocate_shared may co-locate object) + object 20 bytes; ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: pointee: _mutex: native synchronization state may allocate platform resources lazily; ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: pointee: _condition: native condition-variable state may allocate platform synchronization resources; ThreadSafeObservable: Observable: _registrations: Capacity * (12 bytes) element storage; ThreadSafeObservable: Observable: _bindings: Capacity * (12 bytes) element storage; ThreadSafeObservable: _mutex: _owned: owned object: 4 bytes; ThreadSafeObservable: _mutex: _fallback: _mutex: native synchronization state may allocate platform resources lazily; ThreadSafeObservable: _notificationMutex: _owned: owned object: 4 bytes; ThreadSafeObservable: _notificationMutex: _fallback: _mutex: native synchronization state may allocate platform resources lazily]
+     * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+     * End ESPressio Memory Audit
+     */
+class RegistryObservable final : public Observable::ThreadSafeObservable {
     public:
         void Added(const DeviceIdentifier& device, StateTypeId typeId) {
             ExecuteNotification([&](NotificationContext& notification) {
@@ -59,7 +79,18 @@ class StateSubscriberRegistry final {
         }
     };
 
-    struct SubscriberRecord {
+        /**
+     * ESPressio Memory Audit
+     * Members:
+     * - Used (bool): 1 bytes [0 bytes dynamic allocation]
+     * - Device (DeviceIdentifier): 16 bytes [0 bytes dynamic allocation]
+     * - States (std::array<bool, TContract::StateCount>): TContract::StateCount * (1 bytes) [0 bytes dynamic allocation]
+     * Total Memory: 17 bytes known/aligned storage + TContract::StateCount * (1 bytes) [0 bytes dynamic allocation]
+     * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+     * Confidence: low; compile-time sizeof on the concrete target remains authoritative for ABI-sensitive/opaque members.
+     * End ESPressio Memory Audit
+     */
+struct SubscriberRecord {
         bool Used = false;
         DeviceIdentifier Device{};
         std::array<bool, TContract::StateCount> States{};

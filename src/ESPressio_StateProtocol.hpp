@@ -18,12 +18,26 @@ namespace State {
 inline constexpr Primitive::PrimitiveFamilyId StateFamilyId = Primitive::FamilyIds::State;
 
 /// <summary>Encodes and decodes the versioned binary wire protocol used by State family transports.</summary>
+/**
+ * ESPressio Memory Audit
+ * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
+ * Total Memory: 1 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 class StateProtocol final {
 public:
     static constexpr uint16_t Magic = 0x5354;
     static constexpr uint8_t Version = 2;
 
-    enum class MessageType : uint8_t {
+        /**
+     * ESPressio Memory Audit
+     * Underlying storage: 1 bytes
+     * Total Memory: 1 bytes [0 bytes dynamic allocation]
+     * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+     * End ESPressio Memory Audit
+     */
+enum class MessageType : uint8_t {
         Publication = 1,
         Availability = 2,
         Subscribe = 3,
@@ -33,7 +47,17 @@ public:
         UnsubscribeResult = 7
     };
 
-    struct ControlMessage {
+        /**
+     * ESPressio Memory Audit
+     * Members:
+     * - Type (MessageType): 1 bytes [0 bytes dynamic allocation]
+     * - Device (DeviceIdentifier): 16 bytes [0 bytes dynamic allocation]
+     * - TypeId (StateTypeId): 8 bytes [0 bytes dynamic allocation]
+     * Total Memory: 28 bytes [0 bytes dynamic allocation]
+     * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+     * End ESPressio Memory Audit
+     */
+struct ControlMessage {
         MessageType Type = MessageType::Subscribe;
         DeviceIdentifier Device{};
         StateTypeId TypeId = 0;
@@ -41,14 +65,35 @@ public:
 
     /// <summary>Authoritative source-owned availability for one State identity.</summary>
     /// <remarks>SourceUnreachable is never authoritative wire state; it is derived locally from transport/Mesh reachability.</remarks>
-    struct AvailabilityMessage {
+        /**
+     * ESPressio Memory Audit
+     * Members:
+     * - Device (DeviceIdentifier): 16 bytes [0 bytes dynamic allocation]
+     * - TypeId (StateTypeId): 8 bytes [0 bytes dynamic allocation]
+     * - Availability (StateAvailability): 1 bytes [0 bytes dynamic allocation]
+     * - Reason (StateAvailabilityReason): 1 bytes [0 bytes dynamic allocation]
+     * Total Memory: 28 bytes [0 bytes dynamic allocation]
+     * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+     * End ESPressio Memory Audit
+     */
+struct AvailabilityMessage {
         DeviceIdentifier Device{};
         StateTypeId TypeId = 0;
         StateAvailability Availability = StateAvailability::Unavailable;
         StateAvailabilityReason Reason = StateAvailabilityReason::SourceUnbound;
     };
 
-    struct ParsedUpdate {
+        /**
+     * ESPressio Memory Audit
+     * Members:
+     * - Header (StateUpdateHeader): 36 bytes [0 bytes dynamic allocation]
+     * - Payload (uint8_t*): 4 bytes [0 bytes dynamic allocation]
+     * - PayloadSize (std::size_t): 4 bytes [0 bytes dynamic allocation]
+     * Total Memory: 44 bytes [0 bytes dynamic allocation]
+     * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+     * End ESPressio Memory Audit
+     */
+struct ParsedUpdate {
         StateUpdateHeader Header{};
         const uint8_t* Payload = nullptr;
         std::size_t PayloadSize = 0;

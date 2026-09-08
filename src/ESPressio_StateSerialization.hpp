@@ -22,6 +22,23 @@
 namespace ESPressio {
 namespace State {
 
+/**
+ * ESPressio Memory Audit
+ * Members:
+ * - Device (DeviceIdentifier): 16 bytes [0 bytes dynamic allocation]
+ * - TypeId (StateTypeId): 8 bytes [0 bytes dynamic allocation]
+ * - Name (char*): 4 bytes [0 bytes dynamic allocation]
+ * - Epoch (StateEpoch): 4 bytes [0 bytes dynamic allocation]
+ * - Revision (StateRevision): 8 bytes [0 bytes dynamic allocation]
+ * - Availability (StateAvailabilityStatus): 2 bytes [0 bytes dynamic allocation]
+ * - Reachability (StateSourceReachability): 1 bytes [0 bytes dynamic allocation]
+ * - Payload (std::array<uint8_t, MaximumPayloadSize>): MaximumPayloadSize * (1 bytes) [0 bytes dynamic allocation]
+ * - PayloadSize (std::size_t): 4 bytes [0 bytes dynamic allocation]
+ * Total Memory: 48 bytes known/aligned storage + MaximumPayloadSize * (1 bytes) [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * Confidence: low; compile-time sizeof on the concrete target remains authoritative for ABI-sensitive/opaque members.
+ * End ESPressio Memory Audit
+ */
 template<typename TDefinition>
 struct SerializedRemoteState final {
     static constexpr std::size_t MaximumPayloadSize = StateCodec<TDefinition>::MaximumEncodedSize;
@@ -36,6 +53,13 @@ struct SerializedRemoteState final {
     std::size_t PayloadSize = 0;
 };
 
+/**
+ * ESPressio Memory Audit
+ * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
+ * Total Memory: 1 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 template<typename TContract>
 class StateSerialization final {
 private:

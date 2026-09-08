@@ -13,6 +13,13 @@ namespace State {
 /// <summary>Encodes and decodes the wire representation for a state definition.</summary>
 /// <typeparam name="TDefinition">State definition whose value representation is encoded.</typeparam>
 /// <remarks>The default codec performs an exact byte copy and therefore requires a trivially copyable value type.</remarks>
+/**
+ * ESPressio Memory Audit
+ * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
+ * Total Memory: 1 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 template<typename TDefinition, typename = void>
 struct StateCodec {
     /// <summary>Value type represented by the state definition.</summary>

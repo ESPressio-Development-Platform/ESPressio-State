@@ -7,6 +7,13 @@
 
 using namespace ESPressio::State;
 
+/**
+ * ESPressio Memory Audit
+ * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
+ * Total Memory: 1 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 struct CounterState {
     using Value = uint32_t;
     static constexpr StateTypeId Id = 0x7101;
@@ -20,6 +27,20 @@ static DeviceIdentifier Device() {
     return DeviceIdentifier(bytes);
 }
 
+/**
+ * ESPressio Memory Audit
+ * Inherited Memory Total: 4 bytes [0 bytes dynamic allocation]
+ * Members:
+ * - Manager (RemoteStateManager<Contract, 2>*): 4 bytes [0 bytes dynamic allocation]
+ * - Identifier (DeviceIdentifier): 16 bytes [0 bytes dynamic allocation]
+ * - Sequence (std::array<int, 12>): 48 bytes [0 bytes dynamic allocation]
+ * - Count (std::size_t): 4 bytes [0 bytes dynamic allocation]
+ * - Depth (int): 4 bytes [0 bytes dynamic allocation]
+ * - MaximumDepth (int): 4 bytes [0 bytes dynamic allocation]
+ * Total Memory: 84 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 class ReentrantRemoteObserver final : public IRemoteStateManagerObserver {
 public:
     RemoteStateManager<Contract, 2>* Manager = nullptr;

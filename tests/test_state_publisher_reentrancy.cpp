@@ -7,6 +7,13 @@
 
 using namespace ESPressio::State;
 
+/**
+ * ESPressio Memory Audit
+ * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
+ * Total Memory: 1 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 struct CounterState {
     using Value = uint32_t;
     static constexpr StateTypeId Id = 0x7001;
@@ -20,6 +27,21 @@ static DeviceIdentifier Device() {
     return DeviceIdentifier(bytes);
 }
 
+/**
+ * ESPressio Memory Audit
+ * Inherited Memory Total: 4 bytes [0 bytes dynamic allocation]
+ * Members:
+ * - Publisher (StatePublisher<Contract>*): 4 bytes [0 bytes dynamic allocation]
+ * - Source (uint32_t*): 4 bytes [0 bytes dynamic allocation]
+ * - Revisions (std::array<StateRevision, 4>): 32 bytes [0 bytes dynamic allocation]
+ * - Values (std::array<uint32_t, 4>): 16 bytes [0 bytes dynamic allocation]
+ * - Count (std::size_t): 4 bytes [0 bytes dynamic allocation]
+ * - Depth (int): 4 bytes [0 bytes dynamic allocation]
+ * - MaximumDepth (int): 4 bytes [0 bytes dynamic allocation]
+ * Total Memory: 72 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 class ReentrantPublicationObserver final : public IStatePublishedObserver<CounterState> {
 public:
     StatePublisher<Contract>* Publisher = nullptr;
@@ -56,6 +78,20 @@ public:
     }
 };
 
+/**
+ * ESPressio Memory Audit
+ * Inherited Memory Total: 4 bytes [0 bytes dynamic allocation]
+ * Members:
+ * - Publisher (StatePublisher<Contract>*): 4 bytes [0 bytes dynamic allocation]
+ * - Replacement (uint32_t*): 4 bytes [0 bytes dynamic allocation]
+ * - Sequence (std::array<int, 8>): 32 bytes [0 bytes dynamic allocation]
+ * - Count (std::size_t): 4 bytes [0 bytes dynamic allocation]
+ * - Depth (int): 4 bytes [0 bytes dynamic allocation]
+ * - MaximumDepth (int): 4 bytes [0 bytes dynamic allocation]
+ * Total Memory: 56 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 class ReentrantLifecycleObserver final : public IStatePublisherObserver {
 public:
     StatePublisher<Contract>* Publisher = nullptr;

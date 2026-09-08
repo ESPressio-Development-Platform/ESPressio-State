@@ -24,6 +24,13 @@ template<typename TDefinition, typename = void>
 struct StateDefinitionTraits;
 
 /// <summary>State-definition traits specialization for definitions exposing a nested <c>Value</c> type and <c>Id</c>.</summary>
+/**
+ * ESPressio Memory Audit
+ * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
+ * Total Memory: 1 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 template<typename TDefinition>
 struct StateDefinitionTraits<TDefinition, std::void_t<typename TDefinition::Value>> {
     /// <summary>The original state definition type.</summary>
@@ -43,6 +50,13 @@ template<typename TDefinition>
 inline constexpr StateTypeId StateTypeIdOf = StateDefinitionTraits<TDefinition>::Id;
 
 /// <summary>Compile-time tag carrying a state definition, its value type, and its stable identifier.</summary>
+/**
+ * ESPressio Memory Audit
+ * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
+ * Total Memory: 1 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 template<typename TDefinition>
 struct StateTag final {
     using Definition = TDefinition;
@@ -52,6 +66,13 @@ struct StateTag final {
 
 /// <summary>Defines the closed set of state definitions supported by a typed state endpoint.</summary>
 /// <typeparam name="TDefinitions">State definition types included in the contract.</typeparam>
+/**
+ * ESPressio Memory Audit
+ * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
+ * Total Memory: 1 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 template<typename... TDefinitions>
 class StateContract final {
 public:

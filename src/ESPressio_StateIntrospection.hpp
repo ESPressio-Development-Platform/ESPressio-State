@@ -21,6 +21,13 @@ namespace State {
 /// <summary>Provides optional symbolic metadata for a state definition.</summary>
 /// <typeparam name="TDefinition">State definition being inspected.</typeparam>
 /// <remarks>A definition may expose <c>static constexpr const char* Name</c>. Names are diagnostic metadata only and do not participate in state identity, storage, transport, subscription matching, or ordering.</remarks>
+/**
+ * ESPressio Memory Audit
+ * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
+ * Total Memory: 1 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 template<typename TDefinition, typename = void>
 struct StateIntrospectionTraits {
     /// <summary>Optional human-readable state name, or null when none is declared.</summary>
@@ -28,6 +35,13 @@ struct StateIntrospectionTraits {
 };
 
 /// <summary>Introspection specialization for state definitions exposing a symbolic <c>Name</c>.</summary>
+/**
+ * ESPressio Memory Audit
+ * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
+ * Total Memory: 1 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 template<typename TDefinition>
 struct StateIntrospectionTraits<
     TDefinition,
@@ -48,6 +62,17 @@ inline constexpr const char* StateNameOf =
 
 /// <summary>Combines typed remote-state data with runtime-identifiable state metadata.</summary>
 /// <typeparam name="TDefinition">State definition represented by the snapshot.</typeparam>
+/**
+ * ESPressio Memory Audit
+ * Members:
+ * - Device (DeviceIdentifier): 16 bytes [0 bytes dynamic allocation]
+ * - TypeId (StateTypeId): 8 bytes [0 bytes dynamic allocation]
+ * - Name (char*): 4 bytes [0 bytes dynamic allocation]
+ * - State (RemoteStateSnapshot<Value>): 20 bytes [0 bytes dynamic allocation]
+ * Total Memory: 48 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 template<typename TDefinition>
 struct RemoteStateIntrospectionSnapshot final {
     /// <summary>State definition represented by this snapshot.</summary>
@@ -67,6 +92,13 @@ struct RemoteStateIntrospectionSnapshot final {
 
 /// <summary>Provides runtime lookup and iteration across the typed definitions in a state contract.</summary>
 /// <typeparam name="TContract">State contract whose definitions are exposed for introspection.</typeparam>
+/**
+ * ESPressio Memory Audit
+ * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
+ * Total Memory: 1 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 template<typename TContract>
 class StateIntrospection final {
 private:
