@@ -139,14 +139,14 @@ public:
 private:
     static constexpr std::size_t MaximumDeferredNotificationBatches = 4;
 
-        /**
-     * ESPressio Memory Audit
-     * Inherited Memory Total: 96 bytes [ThreadSafeObservable: Observable: IUntypedObservable: IObservable: enable_shared_from_this: embedded weak_ptr shares a control block when activated; ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: shared control block (~12+ bytes; allocate_shared may co-locate object) + object 20 bytes; ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: pointee: _mutex: native synchronization state may allocate platform resources lazily; ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: pointee: _condition: native condition-variable state may allocate platform synchronization resources; ThreadSafeObservable: Observable: _registrations: Capacity * (12 bytes) element storage; ThreadSafeObservable: Observable: _bindings: Capacity * (12 bytes) element storage; ThreadSafeObservable: _mutex: _owned: owned object: 4 bytes; ThreadSafeObservable: _mutex: _fallback: _mutex: native synchronization state may allocate platform resources lazily; ThreadSafeObservable: _notificationMutex: _owned: owned object: 4 bytes; ThreadSafeObservable: _notificationMutex: _fallback: _mutex: native synchronization state may allocate platform resources lazily]
-     * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
-     * Total Memory: 96 bytes [ThreadSafeObservable: Observable: IUntypedObservable: IObservable: enable_shared_from_this: embedded weak_ptr shares a control block when activated; ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: shared control block (~12+ bytes; allocate_shared may co-locate object) + object 20 bytes; ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: pointee: _mutex: native synchronization state may allocate platform resources lazily; ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: pointee: _condition: native condition-variable state may allocate platform synchronization resources; ThreadSafeObservable: Observable: _registrations: Capacity * (12 bytes) element storage; ThreadSafeObservable: Observable: _bindings: Capacity * (12 bytes) element storage; ThreadSafeObservable: _mutex: _owned: owned object: 4 bytes; ThreadSafeObservable: _mutex: _fallback: _mutex: native synchronization state may allocate platform resources lazily; ThreadSafeObservable: _notificationMutex: _owned: owned object: 4 bytes; ThreadSafeObservable: _notificationMutex: _fallback: _mutex: native synchronization state may allocate platform resources lazily]
-     * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
-     * End ESPressio Memory Audit
-     */
+/**
+ * ESPressio Memory Audit
+ * Inherited Memory Total: 96 bytes [ThreadSafeObservable: Observable: IUntypedObservable: IObservable: enable_shared_from_this: embedded weak_ptr shares a control block when activated; ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: shared control block (~12+ bytes; allocate_shared may co-locate object) + object 20 bytes; ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: pointee: _mutex: native synchronization state may allocate platform resources lazily; ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: pointee: _condition: native condition-variable state may allocate platform synchronization resources; ThreadSafeObservable: Observable: _registrations: Capacity * (12 bytes) element storage; ThreadSafeObservable: Observable: _bindings: Capacity * (12 bytes) element storage; ThreadSafeObservable: _mutex: _owned: owned object: 4 bytes; ThreadSafeObservable: _mutex: _fallback: _mutex: native synchronization state may allocate platform resources lazily; ThreadSafeObservable: _notificationMutex: _owned: owned object: 4 bytes; ThreadSafeObservable: _notificationMutex: _fallback: _mutex: native synchronization state may allocate platform resources lazily]
+ * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
+ * Total Memory: 96 bytes [ThreadSafeObservable: Observable: IUntypedObservable: IObservable: enable_shared_from_this: embedded weak_ptr shares a control block when activated; ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: shared control block (~12+ bytes; allocate_shared may co-locate object) + object 20 bytes; ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: pointee: _mutex: native synchronization state may allocate platform resources lazily; ThreadSafeObservable: Observable: IUntypedObservable: IObservable: _lifetimeControl: pointee: _condition: native condition-variable state may allocate platform synchronization resources; ThreadSafeObservable: Observable: _registrations: Capacity * (12 bytes) element storage; ThreadSafeObservable: Observable: _bindings: Capacity * (12 bytes) element storage; ThreadSafeObservable: _mutex: _owned: owned object: 4 bytes; ThreadSafeObservable: _mutex: _fallback: _mutex: native synchronization state may allocate platform resources lazily; ThreadSafeObservable: _notificationMutex: _owned: owned object: 4 bytes; ThreadSafeObservable: _notificationMutex: _fallback: _mutex: native synchronization state may allocate platform resources lazily]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 class ManagerObservable final : public Observable::ThreadSafeObservable {
     public:
         void DeviceRegistered(const DeviceIdentifier& identifier) {
@@ -186,34 +186,34 @@ class ManagerObservable final : public Observable::ThreadSafeObservable {
         }
     };
 
-        /**
-     * ESPressio Memory Audit
-     * Members:
-     * - Identifier (DeviceIdentifier): 16 bytes [0 bytes dynamic allocation]
-     * - Reachability (StateSourceReachability): 1 bytes [0 bytes dynamic allocation]
-     * - States (RemoteStateTuple<TContract>::Type): sizeof(RemoteStateTuple<TContract>::Type) (target/toolchain dependent) [0 bytes dynamic allocation]
-     * Total Memory: 17 bytes known/aligned storage + sizeof(RemoteStateTuple<TContract>::Type) (target/toolchain dependent) [0 bytes dynamic allocation]
-     * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
-     * Confidence: low; compile-time sizeof on the concrete target remains authoritative for ABI-sensitive/opaque members.
-     * End ESPressio Memory Audit
-     */
+/**
+ * ESPressio Memory Audit
+ * Members:
+ * - Identifier (DeviceIdentifier): 16 bytes [0 bytes dynamic allocation]
+ * - Reachability (StateSourceReachability): 1 bytes [0 bytes dynamic allocation]
+ * - States (RemoteStateTuple<TContract>::Type): sizeof(RemoteStateTuple<TContract>::Type) (target/toolchain dependent) [0 bytes dynamic allocation]
+ * Total Memory: 17 bytes known/aligned storage + sizeof(RemoteStateTuple<TContract>::Type) (target/toolchain dependent) [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * Confidence: low; compile-time sizeof on the concrete target remains authoritative for ABI-sensitive/opaque members.
+ * End ESPressio Memory Audit
+ */
 struct DeviceRecord {
         DeviceIdentifier Identifier{};
         StateSourceReachability Reachability = StateSourceReachability::Unknown;
         typename RemoteStateTuple<TContract>::Type States{};
     };
 
-        /**
-     * ESPressio Memory Audit
-     * Members:
-     * - Address (StateAddress): 24 bytes [0 bytes dynamic allocation]
-     * - Previous (StateAvailabilityStatus): 2 bytes [0 bytes dynamic allocation]
-     * - Current (StateAvailabilityStatus): 2 bytes [0 bytes dynamic allocation]
-     * - Active (bool): 1 bytes [0 bytes dynamic allocation]
-     * Total Memory: 32 bytes [0 bytes dynamic allocation]
-     * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
-     * End ESPressio Memory Audit
-     */
+/**
+ * ESPressio Memory Audit
+ * Members:
+ * - Address (StateAddress): 24 bytes [0 bytes dynamic allocation]
+ * - Previous (StateAvailabilityStatus): 2 bytes [0 bytes dynamic allocation]
+ * - Current (StateAvailabilityStatus): 2 bytes [0 bytes dynamic allocation]
+ * - Active (bool): 1 bytes [0 bytes dynamic allocation]
+ * Total Memory: 32 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 struct AvailabilityTransition {
         StateAddress Address{};
         StateAvailabilityStatus Previous{};
@@ -225,26 +225,26 @@ struct AvailabilityTransition {
     using SnapshotStorage = System::Memory::Vector<RemoteDeviceSnapshot, System::Memory::MemoryPolicy::ExternalPreferred>;
     using TransitionStorage = std::array<AvailabilityTransition, TContract::StateCount>;
 
-        /**
-     * ESPressio Memory Audit
-     * Members:
-     * - Identifier (DeviceIdentifier): 16 bytes [0 bytes dynamic allocation]
-     * - TypeId (StateTypeId): 8 bytes [0 bytes dynamic allocation]
-     * - Epoch (StateEpoch): 4 bytes [0 bytes dynamic allocation]
-     * - Revision (StateRevision): 8 bytes [0 bytes dynamic allocation]
-     * - Changed (bool): 1 bytes [0 bytes dynamic allocation]
-     * - DeviceRegistered (bool): 1 bytes [0 bytes dynamic allocation]
-     * - StateAccepted (bool): 1 bytes [0 bytes dynamic allocation]
-     * - StateRejected (bool): 1 bytes [0 bytes dynamic allocation]
-     * - ReachabilityChanged (bool): 1 bytes [0 bytes dynamic allocation]
-     * - PreviousReachability (StateSourceReachability): 1 bytes [0 bytes dynamic allocation]
-     * - CurrentReachability (StateSourceReachability): 1 bytes [0 bytes dynamic allocation]
-     * - AvailabilityTransitions (TransitionStorage): TContract::StateCount * (32 bytes) [0 bytes dynamic allocation]
-     * Total Memory: 43 bytes known/aligned storage + TContract::StateCount * (32 bytes) [0 bytes dynamic allocation]
-     * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
-     * Confidence: low; compile-time sizeof on the concrete target remains authoritative for ABI-sensitive/opaque members.
-     * End ESPressio Memory Audit
-     */
+/**
+ * ESPressio Memory Audit
+ * Members:
+ * - Identifier (DeviceIdentifier): 16 bytes [0 bytes dynamic allocation]
+ * - TypeId (StateTypeId): 8 bytes [0 bytes dynamic allocation]
+ * - Epoch (StateEpoch): 4 bytes [0 bytes dynamic allocation]
+ * - Revision (StateRevision): 8 bytes [0 bytes dynamic allocation]
+ * - Changed (bool): 1 bytes [0 bytes dynamic allocation]
+ * - DeviceRegistered (bool): 1 bytes [0 bytes dynamic allocation]
+ * - StateAccepted (bool): 1 bytes [0 bytes dynamic allocation]
+ * - StateRejected (bool): 1 bytes [0 bytes dynamic allocation]
+ * - ReachabilityChanged (bool): 1 bytes [0 bytes dynamic allocation]
+ * - PreviousReachability (StateSourceReachability): 1 bytes [0 bytes dynamic allocation]
+ * - CurrentReachability (StateSourceReachability): 1 bytes [0 bytes dynamic allocation]
+ * - AvailabilityTransitions (TransitionStorage): TContract::StateCount * (32 bytes) [0 bytes dynamic allocation]
+ * Total Memory: 43 bytes known/aligned storage + TContract::StateCount * (32 bytes) [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * Confidence: low; compile-time sizeof on the concrete target remains authoritative for ABI-sensitive/opaque members.
+ * End ESPressio Memory Audit
+ */
 struct NotificationBatch final {
         DeviceIdentifier Identifier{};
         StateTypeId TypeId = 0;

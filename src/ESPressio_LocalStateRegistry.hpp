@@ -100,19 +100,19 @@ struct LocalStateView final {
 template<typename TContract>
 class LocalStateRegistry final {
 private:
-        /**
-     * ESPressio Memory Audit
-     * Members:
-     * - Source (StateValueType<TDefinition>*): 4 bytes [0 bytes dynamic allocation]
-     * - Epoch (StateEpoch): 4 bytes [0 bytes dynamic allocation]
-     * - Revision (StateRevision): 8 bytes [0 bytes dynamic allocation]
-     * - Bound (bool): 1 bytes [0 bytes dynamic allocation]
-     * - Retained (bool): 1 bytes [0 bytes dynamic allocation]
-     * - NeedsNewEpoch (bool): 1 bytes [0 bytes dynamic allocation]
-     * Total Memory: 20 bytes [0 bytes dynamic allocation]
-     * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
-     * End ESPressio Memory Audit
-     */
+/**
+ * ESPressio Memory Audit
+ * Members:
+ * - Source (StateValueType<TDefinition>*): 4 bytes [0 bytes dynamic allocation]
+ * - Epoch (StateEpoch): 4 bytes [0 bytes dynamic allocation]
+ * - Revision (StateRevision): 8 bytes [0 bytes dynamic allocation]
+ * - Bound (bool): 1 bytes [0 bytes dynamic allocation]
+ * - Retained (bool): 1 bytes [0 bytes dynamic allocation]
+ * - NeedsNewEpoch (bool): 1 bytes [0 bytes dynamic allocation]
+ * Total Memory: 20 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 template<typename TDefinition>
     struct Slot final {
         StateValueType<TDefinition>* Source = nullptr;
@@ -126,13 +126,13 @@ template<typename TDefinition>
     template<typename T>
     struct SlotTuple;
 
-        /**
-     * ESPressio Memory Audit
-     * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
-     * Total Memory: 1 bytes [0 bytes dynamic allocation]
-     * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
-     * End ESPressio Memory Audit
-     */
+/**
+ * ESPressio Memory Audit
+ * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
+ * Total Memory: 1 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 template<typename... TDefinitions>
     struct SlotTuple<StateContract<TDefinitions...>> {
         using Type = std::tuple<Slot<TDefinitions>...>;
@@ -168,15 +168,15 @@ template<typename... TDefinitions>
 
 public:
     /// <summary>Move-only RAII owner for one local State binding.</summary>
-        /**
-     * ESPressio Memory Audit
-     * Members:
-     * - _registry (LocalStateRegistry*): 4 bytes [0 bytes dynamic allocation]
-     * - _onDestroy (StateUnbindMode): 1 bytes [0 bytes dynamic allocation]
-     * Total Memory: 8 bytes [0 bytes dynamic allocation]
-     * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
-     * End ESPressio Memory Audit
-     */
+/**
+ * ESPressio Memory Audit
+ * Members:
+ * - _registry (LocalStateRegistry*): 4 bytes [0 bytes dynamic allocation]
+ * - _onDestroy (StateUnbindMode): 1 bytes [0 bytes dynamic allocation]
+ * Total Memory: 8 bytes [0 bytes dynamic allocation]
+ * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
+ * End ESPressio Memory Audit
+ */
 template<typename TDefinition>
     class Binding final {
     private:
