@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ESPressio-Development-Platform/ESPressio-System
-          ref: structural_realignment_propagation_ESPressio-Mesh
+          ref: primitives_redesign
           path: ESPressio-System
       - name: Checkout Primitive propagation branch
         uses: actions/checkout@v4
@@ -61,7 +61,7 @@ jobs:
           framework = arduino
           lib_deps =
               file://${{ github.workspace }}
-              https://github.com/ESPressio-Development-Platform/ESPressio-System.git#structural_realignment_propagation_ESPressio-Mesh
+              https://github.com/ESPressio-Development-Platform/ESPressio-System.git#primitives_redesign
               https://github.com/ESPressio-Development-Platform/ESPressio-Primitive.git#primitives_redesign
               https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#primitives_redesign
           build_unflags = -std=gnu++11
@@ -100,7 +100,7 @@ jobs:
           framework = arduino
           lib_deps =
               file://${{ github.workspace }}
-              https://github.com/ESPressio-Development-Platform/ESPressio-System.git#structural_realignment_propagation_ESPressio-Mesh
+              https://github.com/ESPressio-Development-Platform/ESPressio-System.git#primitives_redesign
               https://github.com/ESPressio-Development-Platform/ESPressio-Primitive.git#primitives_redesign
               https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#primitives_redesign
           build_unflags = -std=gnu++11
@@ -147,7 +147,7 @@ jobs:
           framework = arduino
           lib_deps =
               file://${{ github.workspace }}
-              https://github.com/ESPressio-Development-Platform/ESPressio-System.git#structural_realignment_propagation_ESPressio-Mesh
+              https://github.com/ESPressio-Development-Platform/ESPressio-System.git#primitives_redesign
               https://github.com/ESPressio-Development-Platform/ESPressio-Primitive.git#primitives_redesign
               https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#primitives_redesign
               https://github.com/ESPressio-Development-Platform/ESPressio-Units.git#primitives_redesign
