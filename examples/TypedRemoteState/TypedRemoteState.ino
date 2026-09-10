@@ -2,16 +2,7 @@
 
 using namespace ESPressio::State;
 
-/**
- * ESPressio Memory Audit
- * Members:
- * - X (float): 4 bytes [0 bytes dynamic allocation]
- * - Y (float): 4 bytes [0 bytes dynamic allocation]
- * - Z (float): 4 bytes [0 bytes dynamic allocation]
- * Total Memory: 12 bytes [0 bytes dynamic allocation]
- * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
- * End ESPressio Memory Audit
- */
+
 struct GyroscopeData {
     float X = 0.0f;
     float Y = 0.0f;
@@ -22,25 +13,13 @@ struct GyroscopeData {
     }
 };
 
-/**
- * ESPressio Memory Audit
- * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
- * Total Memory: 1 bytes [0 bytes dynamic allocation]
- * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
- * End ESPressio Memory Audit
- */
+
 struct FrontGyroscope {
     using Value = GyroscopeData;
     static constexpr StateTypeId Id = 0x1001;
 };
 
-/**
- * ESPressio Memory Audit
- * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
- * Total Memory: 1 bytes [0 bytes dynamic allocation]
- * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
- * End ESPressio Memory Audit
- */
+
 struct RearGyroscope {
     using Value = GyroscopeData;
     static constexpr StateTypeId Id = 0x1002;

@@ -14,17 +14,7 @@ namespace ESPressio {
 namespace State {
 
 /// <summary>Transport metadata that uniquely identifies one authoritative State revision.</summary>
-/**
- * ESPressio Memory Audit
- * Members:
- * - Origin (DeviceIdentifier): 16 bytes [0 bytes dynamic allocation]
- * - TypeId (StateTypeId): 8 bytes [0 bytes dynamic allocation]
- * - Epoch (StateEpoch): 4 bytes [0 bytes dynamic allocation]
- * - Revision (StateRevision): 8 bytes [0 bytes dynamic allocation]
- * Total Memory: 36 bytes [0 bytes dynamic allocation]
- * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
- * End ESPressio Memory Audit
- */
+
 struct StateUpdateHeader {
     DeviceIdentifier Origin{};
     StateTypeId TypeId = 0;
@@ -33,16 +23,7 @@ struct StateUpdateHeader {
 };
 
 /// <summary>Combines State transport metadata with one strongly typed authoritative value.</summary>
-/**
- * ESPressio Memory Audit
- * Members:
- * - Header (StateUpdateHeader): 36 bytes [0 bytes dynamic allocation]
- * - Value (TValue): sizeof(TValue) [0 bytes dynamic allocation]
- * Total Memory: 36 bytes known/aligned storage + sizeof(TValue) [0 bytes dynamic allocation]
- * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
- * Confidence: low; compile-time sizeof on the concrete target remains authoritative for ABI-sensitive/opaque members.
- * End ESPressio Memory Audit
- */
+
 template<typename TValue>
 struct StateUpdate final {
     StateUpdateHeader Header{};
@@ -50,18 +31,7 @@ struct StateUpdate final {
 };
 
 /// <summary>Retains only the latest committed publication for one State publication target.</summary>
-/**
- * ESPressio Memory Audit
- * Members:
- * - Pending (bool): 1 bytes [0 bytes dynamic allocation]
- * - Epoch (StateEpoch): 4 bytes [0 bytes dynamic allocation]
- * - Revision (StateRevision): 8 bytes [0 bytes dynamic allocation]
- * - Value (TValue): sizeof(TValue) [0 bytes dynamic allocation]
- * Total Memory: 16 bytes known/aligned storage + sizeof(TValue) [0 bytes dynamic allocation]
- * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
- * Confidence: low; compile-time sizeof on the concrete target remains authoritative for ABI-sensitive/opaque members.
- * End ESPressio Memory Audit
- */
+
 template<typename TValue>
 struct PendingStateUpdate final {
     bool Pending = false;
@@ -100,15 +70,7 @@ public:
 /// asynchronous latest-fact replication; transport owners consume the retained
 /// latest publication and may replace it with a newer revision before delivery.
 /// </remarks>
-/**
- * ESPressio Memory Audit
- * Members:
- * - _destination (DeviceIdentifier): 16 bytes [0 bytes dynamic allocation]
- * - _pending (PendingStateUpdate<Value>): 20 bytes [0 bytes dynamic allocation]
- * Total Memory: 36 bytes [0 bytes dynamic allocation]
- * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
- * End ESPressio Memory Audit
- */
+
 template<typename TDefinition>
 class StatePublicationTracker final {
 public:

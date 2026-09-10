@@ -5,57 +5,20 @@
 
 using namespace ESPressio::State;
 
-/**
- * ESPressio Memory Audit
- * Members:
- * - X (int16_t): 2 bytes [0 bytes dynamic allocation]
- * - Y (int16_t): 2 bytes [0 bytes dynamic allocation]
- * - Z (int16_t): 2 bytes [0 bytes dynamic allocation]
- * Total Memory: 6 bytes [0 bytes dynamic allocation]
- * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
- * End ESPressio Memory Audit
- */
+
 struct GyroscopeData {
     int16_t X = 0; int16_t Y = 0; int16_t Z = 0;
     bool operator==(const GyroscopeData& other) const { return X == other.X && Y == other.Y && Z == other.Z; }
 };
-/**
- * ESPressio Memory Audit
- * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
- * Total Memory: 1 bytes [0 bytes dynamic allocation]
- * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
- * End ESPressio Memory Audit
- */
+
 struct FrontGyroscope { using Value = GyroscopeData; static constexpr StateTypeId Id = 0x1001; };
-/**
- * ESPressio Memory Audit
- * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
- * Total Memory: 1 bytes [0 bytes dynamic allocation]
- * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
- * End ESPressio Memory Audit
- */
+
 struct RearGyroscope { using Value = GyroscopeData; static constexpr StateTypeId Id = 0x1002; };
-/**
- * ESPressio Memory Audit
- * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
- * Total Memory: 1 bytes [0 bytes dynamic allocation]
- * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
- * End ESPressio Memory Audit
- */
+
 struct LedState { using Value = bool; static constexpr StateTypeId Id = 0x1003; };
 using Contract = StateContract<FrontGyroscope, RearGyroscope, LedState>;
 
-/**
- * ESPressio Memory Audit
- * Inherited Memory Total: 24 bytes [0 bytes dynamic allocation]
- * Members:
- * - Devices (int): 4 bytes [0 bytes dynamic allocation]
- * - Subscribed (int): 4 bytes [0 bytes dynamic allocation]
- * - SourcesBound (int): 4 bytes [0 bytes dynamic allocation]
- * Total Memory: 36 bytes [0 bytes dynamic allocation]
- * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
- * End ESPressio Memory Audit
- */
+
 class StateObserver final : public IRemoteStateManagerObserver, public IStateSubscriptionRegistryObserver,
     public IStateSubscriberRegistryObserver, public IStatePublisherObserver,
     public IStatePublishedObserver<FrontGyroscope>, public IStatePublishedObserver<RearGyroscope> {
@@ -80,18 +43,7 @@ public:
     void OnStatePublished(StateTag<RearGyroscope>, const StateUpdate<GyroscopeData>&) override { ++RearPublished; }
 };
 
-/**
- * ESPressio Memory Audit
- * Inherited Memory Total: 4 bytes [0 bytes dynamic allocation]
- * Members:
- * - Registry (StateSubscriptionRegistry<3>*): 4 bytes [0 bytes dynamic allocation]
- * - ProbeDevice (DeviceIdentifier): 16 bytes [0 bytes dynamic allocation]
- * - SawSubscribedState (bool): 1 bytes [0 bytes dynamic allocation]
- * - SawUnsubscribedState (bool): 1 bytes [0 bytes dynamic allocation]
- * Total Memory: 28 bytes [0 bytes dynamic allocation]
- * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
- * End ESPressio Memory Audit
- */
+
 class ReentrantSubscriptionObserver final : public IStateSubscriptionRegistryObserver {
 public:
     StateSubscriptionRegistry<3>* Registry = nullptr;
@@ -107,32 +59,11 @@ public:
     }
 };
 
-/**
- * ESPressio Memory Audit
- * Inherited Memory Total: 4 bytes [0 bytes dynamic allocation]
- * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
- * Total Memory: 4 bytes [0 bytes dynamic allocation]
- * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
- * End ESPressio Memory Audit
- */
+
 class EmptyRemoteObserver final : public IRemoteStateManagerObserver {};
-/**
- * ESPressio Memory Audit
- * Inherited Memory Total: 4 bytes [0 bytes dynamic allocation]
- * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
- * Total Memory: 4 bytes [0 bytes dynamic allocation]
- * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
- * End ESPressio Memory Audit
- */
+
 class EmptySubscriptionObserver final : public IStateSubscriptionRegistryObserver {};
-/**
- * ESPressio Memory Audit
- * Inherited Memory Total: 4 bytes [0 bytes dynamic allocation]
- * Members: none (standalone empty object occupies 1 byte; an eligible empty base may be optimized to 0 bytes).
- * Total Memory: 4 bytes [0 bytes dynamic allocation]
- * Basis: ESP32/Xtensa ILP32 reference ABI (4-byte pointers/size_t); ESPressio stateful allocators/deleters included; ABI-sensitive STL/platform internals are identified explicitly.
- * End ESPressio Memory Audit
- */
+
 class EmptySubscriberObserver final : public IStateSubscriberRegistryObserver {};
 
 static DeviceIdentifier MakeDevice(uint8_t discriminator) {
