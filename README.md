@@ -4,7 +4,7 @@ Strongly typed authoritative-fact and replication infrastructure for the ESPress
 
 ESPressio State represents **what is true now**. It is deliberately distinct from Command (asynchronous intent) and Event (occurrence/history). Intermediate State revisions may be coalesced because the latest authoritative fact is the semantic result.
 
-This propagation branch implements the platform structural realignment toward the true 1.0.0 baseline. Package version fields are intentionally not changed by this tranche.
+This propagation branch implements the platform structural realignment toward the true baseline. Package version fields are intentionally not changed by this tranche.
 
 ## Identity
 
