@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <ESPressio_DeviceRuntimeIdentity.hpp>
 #include "ESPressio_StateTypes.hpp"
 
 namespace ESPressio::State {
