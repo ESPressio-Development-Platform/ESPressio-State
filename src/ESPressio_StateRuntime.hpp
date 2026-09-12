@@ -77,7 +77,7 @@ class Runtime final {
     template<class C> static void RollbackOne() noexcept { (void)StateTypeRuntime<typename C::StateType>::Get().RollbackInitialization(); }
     template<class C> static bool ValidateOne() noexcept { return StateTypeRuntime<typename C::StateType>::Get().ValidateStart(); }
 public:
-    Runtime() noexcept=default;
+    Runtime()=default;
     Runtime(const Runtime&)=delete;
     Runtime& operator=(const Runtime&)=delete;
 
