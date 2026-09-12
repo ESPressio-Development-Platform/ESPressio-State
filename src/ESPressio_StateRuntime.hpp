@@ -606,12 +606,18 @@ public:
                                                                   StateVersion version) noexcept {
         if(!IsRunning()) return StateRemoteStatus::NotRunning;
         std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
-        return IsRunning()?Table<TState>().AcceptSubscriberBaseline(requester,session,version):StateRemoteStatus::NotRunning;
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        const auto status=Table<TState>().AcceptSubscriberBaseline(requester,session,version);
+        if(status==StateRemoteStatus::Success) StateTypeRuntime<TState>::Get().NotifyOutboundWork();
+        return status;
     }
     template<class TState> StateRemoteStatus RequireSourceResync(const System::DeviceIdentifier& requester) noexcept {
         if(!IsRunning()) return StateRemoteStatus::NotRunning;
         std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
-        return IsRunning()?Table<TState>().RequireSubscriberResync(requester):StateRemoteStatus::NotRunning;
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        const auto status=Table<TState>().RequireSubscriberResync(requester);
+        if(status==StateRemoteStatus::Success) StateTypeRuntime<TState>::Get().NotifyOutboundWork();
+        return status;
     }
     template<class TState> bool SourceSubscriberDirty(const System::DeviceIdentifier& requester) const noexcept { return Table<TState>().SubscriberDirty(requester); }
     template<class TState> StateRemoteSessionState GetSourceSubscriberStatus(const System::DeviceIdentifier& requester) const noexcept { return Table<TState>().SubscriberState(requester); }
@@ -794,6 +800,10 @@ public:
                 break;
             }
         }
+        if(status==StateRemoteStatus::Success &&
+           (decoded.Kind==StateMessageKind::SubscribeAccepted || decoded.Kind==StateMessageKind::BaselineAccepted ||
+            decoded.Kind==StateMessageKind::PublicationAccepted || decoded.Kind==StateMessageKind::ResyncAccepted))
+            StateTypeRuntime<TState>::Get().NotifyOutboundWork();
         return {MapRemoteAdmission(status),StateWireStatus::Success};
     }
 

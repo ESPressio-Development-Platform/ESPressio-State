@@ -46,6 +46,8 @@ static Timing::QualifiedTime Capture(){return {100,Timing::TimeReliability::Sync
 
 template<class TState>
 struct Adapter final {
+    unsigned Wakes=0;
+    void Wake() noexcept { ++Wakes; }
     bool RejectNext=false;
     std::array<System::DeviceIdentifier,3> Discovered{};
     std::size_t DiscoveryCount=0;
@@ -78,13 +80,13 @@ int main(){
 
     Adapter<SpecificState> specificAdapter;
     S::StateTransportBinding<SpecificState,Serializable::DirectBinary> specificBinding;
-    assert((specificBinding.InitializeWithDiscovery<Adapter<SpecificState>,&Adapter<SpecificState>::Admit,&Adapter<SpecificState>::Validate,&Adapter<SpecificState>::Discover>(specificAdapter)));
+    assert((specificBinding.InitializeWithDiscovery<Adapter<SpecificState>,&Adapter<SpecificState>::Admit,&Adapter<SpecificState>::Validate,&Adapter<SpecificState>::Wake,&Adapter<SpecificState>::Discover>(specificAdapter)));
 
     Adapter<AnyState> anyAdapter;
     anyAdapter.Discovered={Identity(0x31,31).Device,Identity(0x32,32).Device,Identity(0x33,33).Device};
     anyAdapter.DiscoveryCount=2;
     S::StateTransportBinding<AnyState,Serializable::DirectBinary> anyBinding;
-    assert((anyBinding.InitializeWithDiscovery<Adapter<AnyState>,&Adapter<AnyState>::Admit,&Adapter<AnyState>::Validate,&Adapter<AnyState>::Discover>(anyAdapter)));
+    assert((anyBinding.InitializeWithDiscovery<Adapter<AnyState>,&Adapter<AnyState>::Admit,&Adapter<AnyState>::Validate,&Adapter<AnyState>::Wake,&Adapter<AnyState>::Discover>(anyAdapter)));
 
     using Runtime=S::Runtime<
         S::TypeConfiguration<SpecificState,S::MaximumRemoteOwners<2>,S::MaximumSubscribers<1>>,
@@ -171,13 +173,13 @@ int main(){
         assert(message.Owner==check.Owner);
         assert(check.RuntimeOwner->GetRemoteSessionStatus<AnyState>(check.Owner.Device)==S::StateRemoteSessionState::Inactive);
         assert(check.RuntimeOwner->SubscriptionSelectorMode<AnyState>()==S::StateSubscriptionSelectorMode::None);
-        const S::StateSnapshot<AnyState> late{{99},{999,Timing::TimeReliability::Synchronized}};
-        assert(check.RuntimeOwner->ApplyRemotePublication<AnyState>(check.Owner,message.Session,{false,2},late)==S::StateRemoteStatus::SessionMismatch);
         check.Called=true;
     };
     anyAdapter.RejectNext=true;
     assert(runtime.Unsubscribe<AnyState>(closing.Handle,S::StateReplicaRelease::RetainLastKnown)==S::StateRemoteStatus::Success);
     assert(probe.Called);
+    const S::StateSnapshot<AnyState> late{{99},{999,Timing::TimeReliability::Synchronized}};
+    assert(runtime.ApplyRemotePublication<AnyState>(deviceA,closing.Handle.Session,{false,2},late)==S::StateRemoteStatus::SessionMismatch);
     S::StateSnapshot<AnyState> closedRead{};
     assert(runtime.TryReadRemote<AnyState>(deviceA.Device,closedRead) && closedRead.Value.Value==88);
     assert(closedRead.TruthTime.Nanoseconds==888 && closedRead.TruthTime.Reliability==Timing::TimeReliability::Holdover);

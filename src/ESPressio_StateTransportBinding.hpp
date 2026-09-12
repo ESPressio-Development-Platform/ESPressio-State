@@ -36,7 +36,8 @@ struct StateTransportContract final {
 /// <remarks>The adapter must retain/copy every field it needs before returning Accepted. The message
 /// contains no physical route, link peer, packet identifier, retry object or adapter-owned byte storage.
 /// Admit is a bounded nonblocking ownership attempt: it must not wait for capacity or invoke
-/// application callbacks. Retry scheduling belongs to the adapter service context.</remarks>
+/// application callbacks or reenter State mutation/lifecycle APIs. Retry scheduling and
+/// family feedback belong to adapter service context after this admission call returns.</remarks>
 template<class TState>
 struct StateOutboundMessage final {
     StateMessageKind Kind=StateMessageKind::Publication;
@@ -85,13 +86,18 @@ struct StateTransportBindingView final {
     bool (*Validate)(void*,const StateTransportContract&) noexcept=nullptr;
     StateTransportAdmission (*Admit)(void*,const StateOutboundMessage<TState>&) noexcept=nullptr;
     StateOwnerDiscoveryStatus (*DiscoverOwners)(void*,StateOwnerDiscoverySink) noexcept=nullptr;
+    void (*Wake)(void*) noexcept=nullptr;
     constexpr explicit operator bool() const noexcept {
-        return Owner && Validate && Admit && bool(Contract.TypeId) && IsValidStatePayloadFormat(Contract.Format);
+        return Owner && Validate && Admit && Wake && bool(Contract.TypeId) && IsValidStatePayloadFormat(Contract.Format);
     }
 };
 }
 
 /// <summary>Frozen typed State-family adapter seam for one TransmissibleState Type and P3 format.</summary>
+/// <remarks>Wake must only set/coalesce the adapter service work signal. It is bounded,
+/// nonblocking, copies no State value and invokes no application code or State API. It may
+/// run during a canonical commit, so it must not service work inline. Validate must confirm
+/// that the target signal and adapter service lifetime are ready before State starts.</remarks>
 template<class TState,class Format>
 class StateTransportBinding final {
     static_assert(TState::IsTransmissibleState && TState::ValidateTier(),"State transport binding requires TransmissibleState");
@@ -103,10 +109,12 @@ public:
 
     template<class Owner,
              StateTransportAdmission (Owner::*Admit)(const StateOutboundMessage<TState>&) noexcept,
-             bool (Owner::*Validate)(const StateTransportContract&) noexcept>
+             bool (Owner::*Validate)(const StateTransportContract&) noexcept,
+             void (Owner::*Wake)() noexcept>
     bool Initialize(Owner& owner) noexcept {
         if(_view) return false;
         _view.Owner=&owner;
+        _view.Wake=[](void* p) noexcept { (static_cast<Owner*>(p)->*Wake)(); };
         _view.Contract=Detail::MakeStateTransportContract<TState,Format>(false);
         _view.Validate=[](void* p,const StateTransportContract& contract) noexcept { return (static_cast<Owner*>(p)->*Validate)(contract); };
         _view.Admit=[](void* p,const StateOutboundMessage<TState>& message) noexcept { return (static_cast<Owner*>(p)->*Admit)(message); };
@@ -116,10 +124,12 @@ public:
     template<class Owner,
              StateTransportAdmission (Owner::*Admit)(const StateOutboundMessage<TState>&) noexcept,
              bool (Owner::*Validate)(const StateTransportContract&) noexcept,
+             void (Owner::*Wake)() noexcept,
              StateOwnerDiscoveryStatus (Owner::*DiscoverOwners)(StateOwnerDiscoverySink) noexcept>
     bool InitializeWithDiscovery(Owner& owner) noexcept {
         if(_view) return false;
         _view.Owner=&owner;
+        _view.Wake=[](void* p) noexcept { (static_cast<Owner*>(p)->*Wake)(); };
         _view.Contract=Detail::MakeStateTransportContract<TState,Format>(true);
         _view.Validate=[](void* p,const StateTransportContract& contract) noexcept { return (static_cast<Owner*>(p)->*Validate)(contract); };
         _view.Admit=[](void* p,const StateOutboundMessage<TState>& message) noexcept { return (static_cast<Owner*>(p)->*Admit)(message); };

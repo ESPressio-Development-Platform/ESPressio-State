@@ -60,6 +60,8 @@ struct Remote final : S::TransmissibleState<Remote,Value> {
     using ConvergencePolicy=Policy;
 };
 struct Adapter final {
+    unsigned Wakes=0;
+    void Wake() noexcept { ++Wakes; }
     Gate* Block=nullptr;
     bool Validate(const S::StateTransportContract&) noexcept { return true; }
     S::StateTransportAdmission Admit(const S::StateOutboundMessage<Remote>&) noexcept {
@@ -106,7 +108,7 @@ int main(){
 
     Adapter adapter;
     S::StateTransportBinding<Remote,Serializable::DirectBinary> binding;
-    assert((binding.Initialize<Adapter,&Adapter::Admit,&Adapter::Validate>(adapter)));
+    assert((binding.Initialize<Adapter,&Adapter::Admit,&Adapter::Validate,&Adapter::Wake>(adapter)));
     S::Runtime<S::TypeConfiguration<Remote,S::MaximumSubscribers<1>,S::MaximumRemoteOwners<1>>> remote;
     auto remoteOwner=remote.BindOwner<Remote>();assert(remoteOwner);
     assert(remote.BindTransport(binding)==S::StateRuntimeStatus::Success);

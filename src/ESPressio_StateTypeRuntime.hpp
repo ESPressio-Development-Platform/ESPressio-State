@@ -63,6 +63,11 @@ class StateTypeRuntime final {
             if(target->Linked.load(std::memory_order_acquire) && target->Publish)
                 target->Publish(target->Owner,target->ObservationIndex);
     }
+    // Called under the canonical mutex or an active family lifecycle lease.
+    // Shutdown drains both before detaching this frozen, borrowed signal target.
+    void NotifyOutboundWork() noexcept {
+        if(_transport.Owner && _transport.Wake) _transport.Wake(_transport.Owner);
+    }
     StateSetStatus Set(std::uint64_t token,const Value& candidate,Timing::QualifiedTime truthTime) {
         if(_phase.load(std::memory_order_acquire)!=Phase::Running) return StateSetStatus::NotRunning;
         Value prepared{};
@@ -83,7 +88,10 @@ class StateTypeRuntime final {
         _version=next;
         _hasValue=true;
         PublishObserversLocked();
-        if(_convergence) _convergence.MarkLatestDirty(_convergence.Owner,_version);
+        if(_convergence) {
+            _convergence.MarkLatestDirty(_convergence.Owner,_version);
+            NotifyOutboundWork();
+        }
         return StateSetStatus::Changed;
     }
     friend class StateOwner<TState>;

@@ -44,6 +44,8 @@ static System::DeviceRuntimeIdentity Identity(std::uint8_t marker,std::uint32_t 
 static Timing::QualifiedTime Capture(){return {88,Timing::TimeReliability::Synchronized};}
 
 struct Adapter final {
+    unsigned Wakes=0;
+    void Wake() noexcept { ++Wakes; }
     S::StateOutboundMessage<RuntimeState> Last{};
     unsigned Admissions=0;
     bool Accept=true;
@@ -100,7 +102,7 @@ int main(){
     assert(directory.Initialize()==Primitive::TypeDirectoryInitializationStatus::Success);
     Adapter adapter;
     S::StateTransportBinding<RuntimeState,Format> binding;
-    assert((binding.Initialize<Adapter,&Adapter::Admit,&Adapter::Validate>(adapter)));
+    assert((binding.Initialize<Adapter,&Adapter::Admit,&Adapter::Validate,&Adapter::Wake>(adapter)));
     using Runtime=S::Runtime<S::TypeConfiguration<RuntimeState,S::MaximumRemoteOwners<2>,S::MaximumSubscribers<2>>>;
     Runtime runtime;
     auto owner=runtime.BindOwner<RuntimeState>();assert(owner);
@@ -230,8 +232,9 @@ int main(){
     S::StateControlWireHeader subscribeAccepted{S::StateMessageKind::SubscribeAccepted,RuntimeState::TypeId,
         local,remoteRequester,S::StateSessionToken{41},{},0};
     encoded=S::EncodeStateControl(subscribeAccepted,bytes.data(),bytes.size());assert(encoded);
+    const auto wakesBeforeAccept=adapter.Wakes;
     admitted=admit(bytes.data(),encoded.Bytes,{remoteRequester});
-    assert(admitted);
+    assert(admitted && adapter.Wakes==wakesBeforeAccept+1);
     assert(runtime.GetSourceSubscriberStatus<RuntimeState>(remoteRequester.Device)==S::StateRemoteSessionState::ActiveTrusted);
     assert(runtime.SourceSubscriberDirty<RuntimeState>(remoteRequester.Device));
     assert(runtime.ServiceLatest<RuntimeState>());
@@ -279,7 +282,9 @@ int main(){
     admitted=admit(bytes.data(),encoded.Bytes,{remoteRequester});
     assert(admitted.Disposition==Primitive::PrimitiveAdmissionDisposition::Rejected);
 
+    const auto wakesBeforeResync=adapter.Wakes;
     assert(runtime.RequireSourceResync<RuntimeState>(remoteRequester.Device)==S::StateRemoteStatus::Success);
+    assert(adapter.Wakes==wakesBeforeResync+1);
     encoded=S::EncodeStateAcceptanceControl(sourceResyncAccepted,bytes.data(),bytes.size());assert(encoded);
     admitted=admit(bytes.data(),encoded.Bytes,{remoteRequester});
     assert(admitted.Disposition==Primitive::PrimitiveAdmissionDisposition::AlreadyAccepted);

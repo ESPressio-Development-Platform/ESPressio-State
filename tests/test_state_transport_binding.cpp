@@ -40,6 +40,8 @@ static System::DeviceRuntimeIdentity Identity(std::uint8_t marker,std::uint32_t 
 static Timing::QualifiedTime Capture(){return {77,Timing::TimeReliability::Synchronized};}
 
 struct Adapter final {
+    unsigned Wakes=0;
+    void Wake() noexcept { ++Wakes; }
     bool Valid=true;
     unsigned Validations=0;
     unsigned Admissions=0;
@@ -80,7 +82,7 @@ int main(){
 
     Adapter adapter;
     S::StateTransportBinding<TransportState,Serializable::CBOR> binding;
-    assert((binding.InitializeWithDiscovery<Adapter,&Adapter::Admit,&Adapter::Validate,&Adapter::Discover>(adapter)));
+    assert((binding.InitializeWithDiscovery<Adapter,&Adapter::Admit,&Adapter::Validate,&Adapter::Wake,&Adapter::Discover>(adapter)));
     using Runtime=S::Runtime<S::TypeConfiguration<TransportState,S::MaximumRemoteOwners<2>,S::MaximumSubscribers<2>>>;
     Runtime runtime;
     auto owner=runtime.BindOwner<TransportState>();assert(owner);
@@ -89,6 +91,12 @@ int main(){
     assert(adapter.Validations==0);
     assert(runtime.Start()==S::StateRuntimeStatus::Success);
     assert(adapter.Validations==1);
+
+    assert(adapter.Wakes==0);
+    assert(owner.Set({7})==S::StateSetStatus::Changed);
+    assert(adapter.Wakes==1 && adapter.Admissions==0); // Wake is not inline publication.
+    assert(owner.Set({7})==S::StateSetStatus::NoChange);
+    assert(adapter.Wakes==1);
 
     const auto& contract=adapter.Contract;
     constexpr auto ExpectedPublicationMaximum=S::MaximumCompleteStatePublicationWireBytes<TransportState,Serializable::CBOR>;
@@ -116,7 +124,9 @@ int main(){
 
     Adapter secondAdapter;
     S::StateTransportBinding<TransportState,Serializable::DirectBinary> secondBinding;
-    assert((secondBinding.Initialize<Adapter,&Adapter::Admit,&Adapter::Validate>(secondAdapter)));
+    assert((secondBinding.Initialize<Adapter,&Adapter::Admit,&Adapter::Validate,&Adapter::Wake>(secondAdapter)));
     assert(runtime.BindTransport(secondBinding)==S::StateRuntimeStatus::Frozen);
     assert(runtime.Shutdown()==S::StateRuntimeStatus::Success);
+    assert(owner.Set({8})==S::StateSetStatus::NotRunning);
+    assert(adapter.Wakes==1);
 }

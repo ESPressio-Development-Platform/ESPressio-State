@@ -46,6 +46,8 @@ struct Fresh final : S::State<Fresh,int> {
     static constexpr std::string_view CanonicalName="Test.State.FreshInitialization";
 };
 struct Adapter final {
+    unsigned Wakes=0;
+    void Wake() noexcept { ++Wakes; }
     bool Validate(const S::StateTransportContract&) noexcept { return true; }
     S::StateTransportAdmission Admit(const S::StateOutboundMessage<RuntimeState>&) noexcept {
         return {S::StateTransportAdmissionStatus::Accepted};
@@ -81,7 +83,7 @@ int main(){
     assert(missing.Initialize()==Primitive::TypeDirectoryInitializationStatus::Success);
     Adapter adapter;
     S::StateTransportBinding<RuntimeState,Serializable::DirectBinary> binding;
-    assert((binding.Initialize<Adapter,&Adapter::Admit,&Adapter::Validate>(adapter)));
+    assert((binding.Initialize<Adapter,&Adapter::Admit,&Adapter::Validate,&Adapter::Wake>(adapter)));
     using RemoteRuntime=S::Runtime<S::TypeConfiguration<RuntimeState,S::MaximumSubscribers<1>>>;
     auto abandoned=std::make_unique<RemoteRuntime>();
     assert(abandoned->BindTransport(binding)==S::StateRuntimeStatus::Success);

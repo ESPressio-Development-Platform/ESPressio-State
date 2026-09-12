@@ -312,3 +312,31 @@ it cannot restore trust or replace a newer transaction. The regression failed be
 Focused remote_runtime, remote_sessions and subscriptions rebuilds pass. Remaining wake/campaign,
 remote observer/tooling, legacy/resources/docs/final gates stay open. Canonical living handoff
 Revision 110 records this work and must advance after publication/CI.
+
+
+## 2026-09-12T14:10:10.823049+00:00 — Frozen adapter work wake
+
+Parent 990b077952753bfbc87055620ca5bb31791dda4e, tree
+8748b7f6aee7e27ce5fa36a8ae28a4fc23c2604a; CI 34698148784 host-contracts and
+esp32-typed-surface SUCCESS. Exact duplicate source resync acceptance is now published/verified.
+
+StateTransportBinding now requires an explicit frozen Wake member thunk in Initialize and
+InitializeWithDiscovery. Wake only marks/coalesces adapter service work; it cannot copy State,
+wait, service inline, invoke application code or reenter State. Validate must establish the
+signal/service lifetime before Start. Changed Set publishes dirty metadata then signals work;
+equal Set remains a strict no-op. Successful source baseline/establishment/resync acceptance and
+explicit source resync trigger also wake service. Runtime lifecycle/canonical drain protects
+the borrowed signal target through shutdown. This is a work signal, not a new Type task/queue.
+
+The wake regression failed before implementation. All 16 host executables pass, covering no
+inline publication, no wake on equal Set or stopped Set, and wakes after source acceptance and
+resync request. All fixture adapters supply explicit wake methods. The unsubscribe probe now
+observes local closure read-only inside Admit and attempts the late mutation after Admit returns;
+nested mutations are outside the nonreentrant adapter admission contract and are not portable
+with ESP32's serialized read/write lifecycle gate.
+
+Next: exact correlated adapter continuity-loss and finite-campaign exhaustion feedback with
+bounded dormant NeedsConvergence metadata; explicit availability/new-commit/resync rearming;
+remote observation/read tooling; legacy/resources/docs/final closure. The adapter's real finite
+pursuit implementation remains in its locked later tranche. Do not claim the wake hook alone
+completes convergence scheduling or State.
