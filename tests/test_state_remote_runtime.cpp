@@ -115,6 +115,12 @@ int main(){
         AdmissionMutex::NonBlockingOnly=false;
         return result;
     };
+    auto reportContinuity=[&](const S::StateContinuityHandle& handle) {
+        AdmissionMutex::Attempts=0;AdmissionMutex::NonBlockingOnly=true;
+        const auto result=runtime.ReportContinuityLoss<RuntimeState>(handle);
+        AdmissionMutex::NonBlockingOnly=false;
+        return result;
+    };
     // A first fact committed between SubscribeNoValue and SubscribeAccepted must
     // remain eligible for the first protected baseline once establishment finishes.
     S::StateRemoteReplicaTable<RuntimeState,0,1> emptyHandshake;
@@ -235,6 +241,8 @@ int main(){
     const auto wakesBeforeAccept=adapter.Wakes;
     admitted=admit(bytes.data(),encoded.Bytes,{remoteRequester});
     assert(admitted && adapter.Wakes==wakesBeforeAccept+1);
+    S::StateContinuityHandle originalSourceLineage{};
+    assert(runtime.CaptureContinuity<RuntimeState>(remoteRequester.Device,S::StateContinuitySide::SourceSubscriber,originalSourceLineage)==S::StateRemoteStatus::Success);
     assert(runtime.GetSourceSubscriberStatus<RuntimeState>(remoteRequester.Device)==S::StateRemoteSessionState::ActiveTrusted);
     assert(runtime.SourceSubscriberDirty<RuntimeState>(remoteRequester.Device));
     assert(runtime.ServiceLatest<RuntimeState>());
@@ -277,6 +285,13 @@ int main(){
     assert(runtime.SourceSubscriberDirty<RuntimeState>(remoteRequester.Device));
     assert(runtime.ServiceLatest<RuntimeState>());
     assert(adapter.Last.Kind==S::StateMessageKind::Publication && adapter.Last.Snapshot.Value.Value==13);
+    assert(reportContinuity(originalSourceLineage)==S::StateRemoteStatus::SessionMismatch);
+    assert(runtime.GetSourceSubscriberStatus<RuntimeState>(remoteRequester.Device)==S::StateRemoteSessionState::ActiveTrusted);
+    S::StateContinuityHandle sourceLineage{};
+    assert(runtime.CaptureContinuity<RuntimeState>(remoteRequester.Device,S::StateContinuitySide::SourceSubscriber,sourceLineage)==S::StateRemoteStatus::Success);
+    assert(reportContinuity(sourceLineage)==S::StateRemoteStatus::Success);
+    assert(reportContinuity(sourceLineage)==S::StateRemoteStatus::Duplicate);
+    assert(runtime.GetSourceSubscriberStatus<RuntimeState>(remoteRequester.Device)==S::StateRemoteSessionState::ResyncRequired);
     sourceResync.Resync=S::StateResyncToken{92};
     encoded=S::EncodeStateControl(sourceResync,bytes.data(),bytes.size());assert(encoded);
     admitted=admit(bytes.data(),encoded.Bytes,{remoteRequester});
@@ -316,6 +331,9 @@ int main(){
     assert(runtime.TryReadRemote<RuntimeState>(remoteOwner.Device,read) && read.Value.Value==20);
     assert(runtime.GetRemoteSessionStatus<RuntimeState>(remoteOwner.Device)==S::StateRemoteSessionState::ActiveTrusted);
 
+    S::StateContinuityHandle remoteLineage{};
+    assert(runtime.CaptureContinuity<RuntimeState>(remoteOwner.Device,S::StateContinuitySide::RemoteOwner,remoteLineage)==S::StateRemoteStatus::Success);
+
     // A lost acceptance can cause an exact snapshot retry; it is re-acknowledged without mutation.
     admitted=admit(bytes.data(),encoded.Bytes,{remoteOwner});
     assert(admitted.Disposition==Primitive::PrimitiveAdmissionDisposition::AlreadyAccepted);
@@ -328,6 +346,33 @@ int main(){
     admitted=admit(publication.data(),encoded.Bytes,{remoteOwner});
     assert(admitted && adapter.Last.Kind==S::StateMessageKind::PublicationAccepted);
     assert(runtime.TryReadRemote<RuntimeState>(remoteOwner.Device,read) && read.Value.Value==21);
+
+    // A gap report still applies after ordinary version advancement, but cannot
+    // affect the newer lineage once an authoritative resync has completed.
+    AdmissionMutex::RejectAttempt=1;
+    assert(reportContinuity(remoteLineage)==S::StateRemoteStatus::Busy);
+    assert(runtime.GetRemoteSessionStatus<RuntimeState>(remoteOwner.Device)==S::StateRemoteSessionState::ActiveTrusted);
+    AdmissionMutex::RejectAttempt=0;
+    const auto gapWakes=adapter.Wakes;
+    assert(reportContinuity(remoteLineage)==S::StateRemoteStatus::Success);
+    assert(adapter.Wakes==gapWakes+1);
+    assert(reportContinuity(remoteLineage)==S::StateRemoteStatus::Duplicate && adapter.Wakes==gapWakes+1);
+    assert(runtime.TryReadRemote<RuntimeState>(remoteOwner.Device,read) && read.Value.Value==21);
+    adapter.Accept=false;
+    assert(!runtime.ServiceLatest<RuntimeState>());
+    assert(adapter.Last.Kind==S::StateMessageKind::ResyncRequest && adapter.Last.Owner==remoteOwner);
+    const auto failedGapToken=adapter.Last.Resync;
+    adapter.Accept=true;
+    assert(runtime.ServiceLatest<RuntimeState>());
+    assert(adapter.Last.Resync.Value()>failedGapToken.Value());
+    const auto gapToken=adapter.Last.Resync;
+    assert(reportContinuity(remoteLineage)==S::StateRemoteStatus::Duplicate);
+    S::StateControlWireHeader gapReply{S::StateMessageKind::ResyncSnapshot,RuntimeState::TypeId,
+        remoteOwner,local,session.Handle.Session,gapToken,0};
+    encoded=S::EncodeStateSnapshotControl<RuntimeState,Format>(gapReply,remoteNext,{false,8},bytes.data(),bytes.size());assert(encoded);
+    assert(admit(bytes.data(),encoded.Bytes,{remoteOwner}));
+    assert(reportContinuity(remoteLineage)==S::StateRemoteStatus::SessionMismatch);
+    assert(runtime.GetRemoteSessionStatus<RuntimeState>(remoteOwner.Device)==S::StateRemoteSessionState::ActiveTrusted);
 
     // ResyncRequired allocates a fresh requester token and a matching snapshot commits/re-acks idempotently.
     S::StateControlWireHeader required{S::StateMessageKind::ResyncRequired,RuntimeState::TypeId,

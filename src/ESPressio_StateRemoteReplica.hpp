@@ -35,6 +35,7 @@ struct StateRemoteOwnerSlot final {
     StateResyncToken Resync{};
     StateResyncToken LastAcceptedResync{};
     StateVersion LastAcceptedResyncVersion{};
+    bool ResyncRequestPending=false;
 };
 
 template<class TState>
@@ -139,12 +140,84 @@ public:
         else return false;
     }();
 
+    StateRemoteStatus CaptureContinuity(const System::DeviceRuntimeIdentity& local,
+        const System::DeviceIdentifier& peer,StateContinuitySide side,StateContinuityHandle& output) const noexcept {
+        if(!local || !peer || (side!=StateContinuitySide::SourceSubscriber && side!=StateContinuitySide::RemoteOwner)) return StateRemoteStatus::InvalidIdentity;
+        Detail::StateAdmissionLock<true> lock(_mutex);
+        if(!lock) return StateRemoteStatus::Busy;
+        if(side==StateContinuitySide::RemoteOwner) {
+            const auto* slot=FindOwnerLocked(peer);
+            if(!slot) return StateRemoteStatus::NotFound;
+            if(slot->SessionState!=StateRemoteSessionState::ActiveTrusted) return StateRemoteStatus::Conflict;
+            output={TState::TypeId,side,slot->Owner,local,slot->Session,slot->LastAcceptedResync};
+        } else {
+            const auto* slot=FindSubscriberLocked(peer);
+            if(!slot) return StateRemoteStatus::NotFound;
+            if(slot->SessionState!=StateRemoteSessionState::ActiveTrusted) return StateRemoteStatus::Conflict;
+            output={TState::TypeId,side,local,slot->Requester,slot->Session,slot->LastAcceptedResync};
+        }
+        return StateRemoteStatus::Success;
+    }
+    StateRemoteStatus InvalidateContinuity(const StateContinuityHandle& handle) noexcept {
+        if(!handle || handle.TypeId!=TState::TypeId) return StateRemoteStatus::InvalidIdentity;
+        Detail::StateAdmissionLock<true> lock(_mutex);
+        if(!lock) return StateRemoteStatus::Busy;
+        if(handle.Side==StateContinuitySide::RemoteOwner) {
+            auto* slot=FindOwnerLocked(handle.Owner.Device);
+            if(!slot) return StateRemoteStatus::NotFound;
+            if(slot->Owner!=handle.Owner || slot->Session!=handle.Session || slot->LastAcceptedResync!=handle.BaselineResync)
+                return StateRemoteStatus::SessionMismatch;
+            if(slot->SessionState==StateRemoteSessionState::ResyncRequired || slot->SessionState==StateRemoteSessionState::AwaitingResync)
+                return StateRemoteStatus::Duplicate;
+            if(slot->SessionState!=StateRemoteSessionState::ActiveTrusted) return StateRemoteStatus::Conflict;
+            slot->SessionState=StateRemoteSessionState::ResyncRequired;
+            slot->Resync={};slot->ResyncRequestPending=true;
+        } else {
+            auto* slot=FindSubscriberLocked(handle.Requester.Device);
+            if(!slot) return StateRemoteStatus::NotFound;
+            if(slot->Requester!=handle.Requester || slot->Session!=handle.Session || slot->LastAcceptedResync!=handle.BaselineResync)
+                return StateRemoteStatus::SessionMismatch;
+            if(slot->SessionState==StateRemoteSessionState::ResyncRequired || slot->SessionState==StateRemoteSessionState::AwaitingResync)
+                return StateRemoteStatus::Duplicate;
+            if(slot->SessionState!=StateRemoteSessionState::ActiveTrusted) return StateRemoteStatus::Conflict;
+            slot->SessionState=StateRemoteSessionState::ResyncRequired;
+            slot->Resync={};slot->Dirty=false;slot->ResyncRequiredPending=true;
+        }
+        return StateRemoteStatus::Success;
+    }
+    StateRemoteStatus TryPrepareRemoteResync(StateRemoteResyncWork& output) noexcept {
+        Detail::StateAdmissionLock<true> lock(_mutex);
+        if(!lock) return StateRemoteStatus::Busy;
+        for(auto& slot:_owners) {
+            if(!slot.Occupied || !slot.ResyncRequestPending) continue;
+            if(slot.SessionState!=StateRemoteSessionState::ResyncRequired && slot.SessionState!=StateRemoteSessionState::AwaitingResync) continue;
+            StateResyncToken token{};
+            const auto allocated=Detail::StateProcessTokenAuthority::TryAllocateResyncNonBlocking(token);
+            if(allocated!=StateRemoteStatus::Success) {
+                if(allocated==StateRemoteStatus::TokenExhausted) slot.ResyncRequestPending=false;
+                return allocated;
+            }
+            slot.Resync=token;slot.ResyncRequestPending=false;
+            slot.SessionState=StateRemoteSessionState::AwaitingResync;
+            output={slot.Owner,slot.Session,token};
+            return StateRemoteStatus::Success;
+        }
+        return StateRemoteStatus::NotFound;
+    }
+    void CompleteRemoteResyncTransfer(const StateRemoteResyncWork& work,bool accepted) noexcept {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        auto* slot=FindOwnerLocked(work.Owner.Device);
+        if(!slot || slot->Owner!=work.Owner || slot->Session!=work.Session || slot->Resync!=work.Resync ||
+           slot->SessionState!=StateRemoteSessionState::AwaitingResync) return;
+        if(!accepted) slot->ResyncRequestPending=true;
+    }
     void CloseSessions() noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         for(auto& slot:_owners) {
             if(!slot.Occupied) continue;
             slot.SessionState=StateRemoteSessionState::Inactive;
             slot.Resync={};
+            slot.ResyncRequestPending=false;
         }
         for(auto& slot:_subscribers) slot={};
     }
@@ -167,6 +240,7 @@ public:
         slot->SessionState=StateRemoteSessionState::Establishing;
         slot->Baseline={};
         slot->Resync={};
+        slot->ResyncRequestPending=false;
         return StateRemoteStatus::Success;
     }
 
@@ -189,6 +263,7 @@ public:
         slot->HasValue=true;
         slot->SessionState=StateRemoteSessionState::ActiveTrusted;
         slot->Resync={};
+        slot->ResyncRequestPending=false;
         return StateRemoteStatus::Success;
     }
     template<bool NonBlocking=false>
@@ -206,6 +281,7 @@ public:
         slot->Baseline={};
         slot->SessionState=StateRemoteSessionState::ActiveNoBaseline;
         slot->Resync={};
+        slot->ResyncRequestPending=false;
         return StateRemoteStatus::Success;
     }
     template<bool NonBlocking=false>
@@ -267,6 +343,7 @@ public:
         if(!slot) return StateRemoteStatus::NotFound;
         slot->SessionState=StateRemoteSessionState::ResyncRequired;
         slot->Resync={};
+        slot->ResyncRequestPending=false;
         return StateRemoteStatus::Success;
     }
     StateRemoteStatus BeginResync(const System::DeviceIdentifier& device,StateResyncToken token) noexcept {
@@ -276,6 +353,7 @@ public:
         if(!slot) return StateRemoteStatus::NotFound;
         if(slot->SessionState!=StateRemoteSessionState::ResyncRequired && slot->SessionState!=StateRemoteSessionState::AwaitingResync)
             return StateRemoteStatus::Conflict;
+        slot->ResyncRequestPending=false;
         slot->Resync=token;
         slot->SessionState=StateRemoteSessionState::AwaitingResync;
         return StateRemoteStatus::Success;
@@ -303,6 +381,7 @@ public:
             const auto allocated=Detail::StateProcessTokenAuthority::TryAllocateResyncNonBlocking(fresh);
             if(allocated!=StateRemoteStatus::Success) return allocated;
         } else if(!Detail::StateProcessTokenAuthority::TryAllocate(fresh)) return StateRemoteStatus::TokenExhausted;
+        slot->ResyncRequestPending=false;
         slot->Resync=fresh;
         slot->SessionState=StateRemoteSessionState::AwaitingResync;
         token=fresh;
@@ -329,6 +408,7 @@ public:
         slot->LastAcceptedResync=token;
         slot->LastAcceptedResyncVersion=version;
         slot->Resync={};
+        slot->ResyncRequestPending=false;
         slot->SessionState=StateRemoteSessionState::ActiveTrusted;
         return StateRemoteStatus::Success;
     }
@@ -366,6 +446,7 @@ public:
         }
         slot->Session={};
         slot->Resync={};
+        slot->ResyncRequestPending=false;
         slot->Baseline={};
         slot->SessionState=StateRemoteSessionState::Inactive;
         return StateRemoteStatus::Success;

@@ -36,6 +36,25 @@ enum class StateRemoteStatus : std::uint8_t {
     Busy
 };
 
+enum class StateContinuitySide : std::uint8_t { SourceSubscriber, RemoteOwner };
+/// <summary>Local adapter correlation for one trusted baseline lineage; never serialized.</summary>
+/// <remarks>Ordinary publications do not change this lineage. A completed resync does, so
+/// delayed gap/overflow feedback cannot invalidate its replacement baseline.</remarks>
+struct StateContinuityHandle final {
+    StateTypeId TypeId{};
+    StateContinuitySide Side=StateContinuitySide::RemoteOwner;
+    System::DeviceRuntimeIdentity Owner{},Requester{};
+    StateSessionToken Session{};
+    StateResyncToken BaselineResync{};
+    constexpr explicit operator bool() const noexcept { return TypeId && Owner && Requester && Session &&
+        (Side==StateContinuitySide::SourceSubscriber || Side==StateContinuitySide::RemoteOwner); }
+};
+struct StateRemoteResyncWork final {
+    System::DeviceRuntimeIdentity Owner{};
+    StateSessionToken Session{};
+    StateResyncToken Resync{};
+};
+
 enum class StateReplicaRelease : std::uint8_t { RetainLastKnown, ReleaseReplica };
 
 /// <summary>Monotonic non-zero token sequence scoped to one requester RuntimeIncarnation.</summary>

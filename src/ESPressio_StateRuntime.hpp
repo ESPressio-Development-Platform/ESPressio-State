@@ -624,6 +624,34 @@ public:
     template<class TState> StateVersion SourceAcceptedBaseline(const System::DeviceIdentifier& requester) const noexcept { return Table<TState>().SubscriberAcceptedBaseline(requester); }
     template<class TState> std::size_t SubscribersInUse() const noexcept { return Table<TState>().SubscribersInUse(); }
 
+    /// <summary>Captures exact trusted-lineage correlation for deferred adapter gap feedback.</summary>
+    template<class TState>
+    StateRemoteStatus CaptureContinuity(const System::DeviceIdentifier& peer,StateContinuitySide side,
+                                       StateContinuityHandle& output) const noexcept {
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle,std::try_to_lock);
+        if(!activity) return StateRemoteStatus::Busy;
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        System::DeviceRuntimeIdentity local{};
+        if(!System::RuntimeIdentity::TryRead(local)) return StateRemoteStatus::InvalidIdentity;
+        return Table<TState>().CaptureContinuity(local,peer,side,output);
+    }
+    /// <summary>Invalidates only the exact captured lineage and wakes bounded resync service.</summary>
+    template<class TState>
+    StateRemoteStatus ReportContinuityLoss(const StateContinuityHandle& handle) noexcept {
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle,std::try_to_lock);
+        if(!activity) return StateRemoteStatus::Busy;
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        System::DeviceRuntimeIdentity local{};
+        if(!System::RuntimeIdentity::TryRead(local)) return StateRemoteStatus::InvalidIdentity;
+        if((handle.Side==StateContinuitySide::RemoteOwner && handle.Requester!=local) ||
+           (handle.Side==StateContinuitySide::SourceSubscriber && handle.Owner!=local)) return StateRemoteStatus::InvalidIdentity;
+        const auto status=Table<TState>().InvalidateContinuity(handle);
+        if(status==StateRemoteStatus::Success) StateTypeRuntime<TState>::Get().NotifyOutboundWork();
+        return status;
+    }
+
     /// <summary>Offers at most one subscriber's current truth to the frozen adapter.</summary>
     /// <remarks>The caller is the family/adapter service context. State captures one consistent
     /// snapshot/version before selecting work. A newer Set leaves the slot dirty, so completion of
@@ -636,6 +664,17 @@ public:
         if(!IsRunning()) return {StateTransportAdmissionStatus::Quiesced};
         System::DeviceRuntimeIdentity owner{};
         if(!System::RuntimeIdentity::TryRead(owner)) return {StateTransportAdmissionStatus::InvalidDestination};
+        StateRemoteResyncWork remoteWork{};
+        const auto remoteReady=Table<TState>().TryPrepareRemoteResync(remoteWork);
+        if(remoteReady==StateRemoteStatus::Success) {
+            StateOutboundMessage<TState> request{};
+            request.Kind=StateMessageKind::ResyncRequest;request.Owner=remoteWork.Owner;request.Requester=owner;
+            request.Session=remoteWork.Session;request.Resync=remoteWork.Resync;
+            const auto admitted=StateTypeRuntime<TState>::Get().AdmitOutbound(request);
+            Table<TState>().CompleteRemoteResyncTransfer(remoteWork,bool(admitted));
+            return admitted;
+        }
+        if(remoteReady!=StateRemoteStatus::NotFound) return {StateTransportAdmissionStatus::CapacityUnavailable};
         StateSnapshot<TState> snapshot{};StateVersion version{};
         if(!StateTypeRuntime<TState>::Get().TryReadVersioned(snapshot,version))
             return {StateTransportAdmissionStatus::CapacityUnavailable};

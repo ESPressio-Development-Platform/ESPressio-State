@@ -340,3 +340,31 @@ bounded dormant NeedsConvergence metadata; explicit availability/new-commit/resy
 remote observation/read tooling; legacy/resources/docs/final closure. The adapter's real finite
 pursuit implementation remains in its locked later tranche. Do not claim the wake hook alone
 completes convergence scheduling or State.
+
+
+## 2026-09-12T14:26:28.911442+00:00 — Correlated adapter continuity loss
+
+Parent bc05536e2cafd6634914d39ba981d2cd43701b76, tree
+e63191d4bf5ec534d659c7cc12d22358b8b55d25; CI 34698546876 host-contracts and
+esp32-typed-surface SUCCESS. Primitive handoff is now
+79a1315eaade1293f4f0823b159ee599208abafd through Revision 111.
+
+StateContinuityHandle identifies Type, side, exact owner/requester incarnations, session and
+last accepted resync token. Capture/ReportContinuityLoss use nonblocking lifecycle/table paths.
+Only a trusted compact baseline has a capturable handle. Ordinary publications preserve the
+lineage, while a completed resync changes it. Stale/replacement/closed feedback is rejected;
+already recovering sessions report Duplicate without cancelling a newer resync. Last-known
+snapshots stay readable. Source loss queues ResyncRequired; requester loss queues a bounded
+pending ResyncRequest opportunity and wakes the frozen adapter service.
+
+ServiceLatest handles queued requester resync before requiring a local canonical fact, enabling
+remote-only deployments. Each failed ownership handoff retries with a fresh token. Completion
+is correlated by owner/session/token, so it cannot overwrite newer recovery or closed state.
+Accepted ownership leaves no periodic State retry. This adds fixed metadata, not another task.
+
+All 17 active host executables pass, including the new continuity_feedback fixture. Coverage
+includes source and requester lineage, ordinary advancement vs fresh resync, contention without
+mutation, duplicate feedback, fresh token after failed admission, retained reads, invalid
+Type/side, closed sessions and service without a local owner/fact. CMake includes the new test.
+CI for this checkpoint must be checked after publication. Exhaustion/availability feedback and
+finite campaign metadata, remote observations/tooling, legacy/resources/docs/final gates remain.
