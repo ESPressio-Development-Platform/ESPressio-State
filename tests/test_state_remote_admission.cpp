@@ -79,8 +79,10 @@ int main(){
     accepted=S::DecodeValidatedStateIngress<AdmissionState,Format>(control.data(),control.size(),{requester},decoded);
     assert(accepted && decoded.Kind==S::StateMessageKind::SubscribeRequest && !decoded.HasSnapshot);
     assert(decoded.Owner==owner && decoded.Requester==requester);
-    assert(!S::DecodeValidatedStateIngress<AdmissionState,Format>(control.data(),control.size(),{owner},decoded));
-    assert(!S::DecodeValidatedStateIngress<AdmissionState,Format>(control.data(),control.size(),{relay},decoded));
+    const auto wrongRequesterOwner=S::DecodeValidatedStateIngress<AdmissionState,Format>(control.data(),control.size(),{owner},decoded);
+    assert(!wrongRequesterOwner);
+    const auto wrongRequesterRelay=S::DecodeValidatedStateIngress<AdmissionState,Format>(control.data(),control.size(),{relay},decoded);
+    assert(!wrongRequesterRelay);
 
     // Type mismatch is unsupported rather than a mutation-capable decode.
     publication[5]^=0x01;
