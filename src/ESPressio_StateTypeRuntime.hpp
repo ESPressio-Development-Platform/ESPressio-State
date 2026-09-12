@@ -13,6 +13,7 @@
 #include "ESPressio_StatePersistence.hpp"
 #include "ESPressio_StateRemoteReplica.hpp"
 #include "ESPressio_StateSnapshot.hpp"
+#include "ESPressio_StateTransportBinding.hpp"
 #include "ESPressio_StateVersion.hpp"
 
 namespace ESPressio::State {
@@ -45,6 +46,7 @@ class StateTypeRuntime final {
     StateObserverTargetNode* _observerTargets=nullptr;
     StatePersistenceBindingView<TState> _persistence{};
     StateConvergenceBindingView<TState> _convergence{};
+    Detail::StateTransportBindingView<TState> _transport{};
     std::atomic<Phase> _phase{Phase::Uninitialized};
     Timing::QualifiedTime (*_captureTime)()=nullptr;
 
@@ -114,6 +116,14 @@ public:
         _convergence=binding;
         return StateRuntimeStatus::Success;
     }
+    StateRuntimeStatus BindTransport(Detail::StateTransportBindingView<TState> binding) noexcept {
+        static_assert(TState::IsTransmissibleState,"Only TransmissibleState Types may bind transport adapters");
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        if(_phase.load(std::memory_order_relaxed)!=Phase::Uninitialized) return StateRuntimeStatus::Frozen;
+        if(_transport || !binding || binding.Contract.TypeId!=TState::TypeId) return StateRuntimeStatus::InvalidConfiguration;
+        _transport=binding;
+        return StateRuntimeStatus::Success;
+    }
 
     StateRuntimeStatus StageObserverTarget(StateObserverTargetNode& target) noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
@@ -144,6 +154,7 @@ public:
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         for(auto* target=_observerTargets;target;target=target->Next)
             if(!target->Linked.load(std::memory_order_relaxed) || !target->Validate || !target->Validate(target->Owner)) return false;
+        if(_transport && (!_transport.Validate || !_transport.Validate(_transport.Owner,_transport.Contract))) return false;
         return true;
     }
 
@@ -202,6 +213,11 @@ public:
     bool HasOwner() const noexcept { std::lock_guard<System::Synchronization::Mutex> lock(_mutex);return _ownerEverBound; }
     bool OwnerAlive() const noexcept { std::lock_guard<System::Synchronization::Mutex> lock(_mutex);return _ownerAlive; }
     bool HasPersistence() const noexcept { std::lock_guard<System::Synchronization::Mutex> lock(_mutex);return bool(_persistence); }
+    bool HasTransport() const noexcept { std::lock_guard<System::Synchronization::Mutex> lock(_mutex);return bool(_transport); }
+    bool SupportsOwnerDiscovery() const noexcept {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        return _transport && _transport.Contract.SupportsOwnerDiscovery && _transport.DiscoverOwners;
+    }
     StateVersion Version() const noexcept { std::lock_guard<System::Synchronization::Mutex> lock(_mutex);return _version; }
     bool TryRead(StateSnapshot<TState>& output) const noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
@@ -209,6 +225,26 @@ public:
         _storage.CopyOut(output.Value);
         output.TruthTime=_truthTime;
         return true;
+    }
+    StateTransportAdmission AdmitOutbound(const StateOutboundMessage<TState>& message) noexcept {
+        Detail::StateTransportBindingView<TState> binding{};
+        {
+            std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+            if(_phase.load(std::memory_order_relaxed)!=Phase::Running || !_transport)
+                return {StateTransportAdmissionStatus::Quiesced};
+            binding=_transport;
+        }
+        return binding.Admit(binding.Owner,message);
+    }
+    StateOwnerDiscoveryStatus DiscoverOwners(StateOwnerDiscoverySink sink) noexcept {
+        Detail::StateTransportBindingView<TState> binding{};
+        {
+            std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+            if(_phase.load(std::memory_order_relaxed)!=Phase::Running || !_transport) return StateOwnerDiscoveryStatus::Quiesced;
+            if(!_transport.Contract.SupportsOwnerDiscovery || !_transport.DiscoverOwners) return StateOwnerDiscoveryStatus::Unsupported;
+            binding=_transport;
+        }
+        return binding.DiscoverOwners(binding.Owner,sink);
     }
 };
 
