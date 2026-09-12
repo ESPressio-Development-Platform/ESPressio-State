@@ -11,6 +11,7 @@
 #include "ESPressio_StateObserverTarget.hpp"
 #include "ESPressio_StateOwner.hpp"
 #include "ESPressio_StatePersistence.hpp"
+#include "ESPressio_StateRemoteReplica.hpp"
 #include "ESPressio_StateSnapshot.hpp"
 #include "ESPressio_StateVersion.hpp"
 
@@ -43,6 +44,7 @@ class StateTypeRuntime final {
     std::uint64_t _ownerToken=0;
     StateObserverTargetNode* _observerTargets=nullptr;
     StatePersistenceBindingView<TState> _persistence{};
+    StateConvergenceBindingView<TState> _convergence{};
     std::atomic<Phase> _phase{Phase::Uninitialized};
     Timing::QualifiedTime (*_captureTime)()=nullptr;
 
@@ -73,7 +75,7 @@ class StateTypeRuntime final {
         }
         const auto next=NextStateVersion(_version,_hasValue);
         // Durable authority is established before RAM publication. A failed/ambiguous
-        // atomic replace consumes no compact version and exposes no observer change.
+        // atomic replace consumes no compact version and exposes no observer/convergence change.
         if(_persistence && !_persistence.Commit(_persistence.Owner,prepared,truthTime))
             return StateSetStatus::PersistenceFailed;
         _storage.CommitPrepared(prepared);
@@ -83,6 +85,9 @@ class StateTypeRuntime final {
         // TH10 publication is metadata-only: target thunks set one pending bit and common Wake.
         // No observer may read State or invoke application code from this producer path.
         PublishObserversLocked();
+        // Source convergence stores only a latest-truth dirty marker. It never copies one
+        // TValue per subscriber and does not perform transport work while the commit lock is held.
+        if(_convergence) _convergence.MarkLatestDirty(_convergence.Owner);
         return StateSetStatus::Changed;
     }
     friend class StateOwner<TState>;
@@ -105,6 +110,13 @@ public:
         if(_phase.load(std::memory_order_relaxed)!=Phase::Uninitialized) return StateRuntimeStatus::Frozen;
         if(_persistence || !binding) return StateRuntimeStatus::InvalidConfiguration;
         _persistence=binding;
+        return StateRuntimeStatus::Success;
+    }
+    StateRuntimeStatus BindConvergence(StateConvergenceBindingView<TState> binding) noexcept {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        if(_phase.load(std::memory_order_relaxed)!=Phase::Uninitialized) return StateRuntimeStatus::Frozen;
+        if(_convergence || !binding) return StateRuntimeStatus::InvalidConfiguration;
+        _convergence=binding;
         return StateRuntimeStatus::Success;
     }
 
