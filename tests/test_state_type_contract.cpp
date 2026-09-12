@@ -13,6 +13,7 @@ struct LocalFlag final : S::State<LocalFlag,bool> {
 };
 struct SerializableValue final {
     int Value=0;
+    constexpr bool operator==(const SerializableValue& other) const noexcept { return Value==other.Value; }
     ESPRESSIO_SERIALIZABLE_TYPE(SerializableValue)
     ESPRESSIO_SERIALIZABLE_SCHEMA_VERSION(1)
     ESPRESSIO_SERIALIZABLE_PROPERTIES(ESPRESSIO_PROPERTY("value",Value))
@@ -62,12 +63,12 @@ int main(){
     assert(local && local->Tier==S::StateTier::Local && !local->ValueSchema && !local->ConvergencePolicy);
     assert(serial && serial->Tier==S::StateTier::Serializable && serial->ValueSchema && !serial->ConvergencePolicy);
     assert(remote && remote->Tier==S::StateTier::Transmissible && remote->ValueSchema && remote->ConvergencePolicy);
-    assert(serial->MaximumSerializedValueBytes[0]==Serializable::MaximumSerializedSize<SerializableValue,Serializable::DirectBinary>);
+    assert((serial->MaximumSerializedValueBytes[0]==Serializable::MaximumSerializedSize<SerializableValue,Serializable::DirectBinary>));
     assert(serialCommon->SerializedSize.MaximumCompletePrimitiveWireBytes>=serial->MaximumSerializedValueBytes[0]);
-    assert(remote->MaximumPublicationWireBytes[0]==S::MaximumCompleteStatePublicationWireBytes<RemoteFlag,Serializable::DirectBinary>);
-    assert(remote->MaximumPublicationWireBytes[1]==S::MaximumCompleteStatePublicationWireBytes<RemoteFlag,Serializable::CBOR>);
-    assert(remote->MaximumPublicationWireBytes[2]==S::MaximumCompleteStatePublicationWireBytes<RemoteFlag,Serializable::JSON>);
-    assert(remote->MaximumSnapshotControlWireBytes[0]==S::MaximumCompleteStateSnapshotControlWireBytes<RemoteFlag,Serializable::DirectBinary>);
+    assert((remote->MaximumPublicationWireBytes[0]==S::MaximumCompleteStatePublicationWireBytes<RemoteFlag,Serializable::DirectBinary>));
+    assert((remote->MaximumPublicationWireBytes[1]==S::MaximumCompleteStatePublicationWireBytes<RemoteFlag,Serializable::CBOR>));
+    assert((remote->MaximumPublicationWireBytes[2]==S::MaximumCompleteStatePublicationWireBytes<RemoteFlag,Serializable::JSON>));
+    assert((remote->MaximumSnapshotControlWireBytes[0]==S::MaximumCompleteStateSnapshotControlWireBytes<RemoteFlag,Serializable::DirectBinary>));
     assert(remote->Resources.RuntimeBytes==sizeof(S::StateTypeRuntime<RemoteFlag>));
     assert(remote->Resources.ValueBytes==sizeof(SerializableValue));
     assert(remoteCommon->SerializedSize.MaximumCompletePrimitiveWireBytes>=remote->Resources.MaximumPublicationWireBytes);
