@@ -10,6 +10,8 @@
 #include "ESPressio_TransmissibleState.hpp"
 #include "ESPressio_StateWireV1.hpp"
 #include "ESPressio_StatePersistence.hpp"
+#include "ESPressio_StateRemoteSession.hpp"
+#include "ESPressio_StateRemoteReplica.hpp"
 #include "ESPressio_StateObserverTarget.hpp"
 #include "ESPressio_StateOwner.hpp"
 #include "ESPressio_StateTypeRuntime.hpp"
