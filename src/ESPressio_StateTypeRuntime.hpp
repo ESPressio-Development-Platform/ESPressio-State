@@ -92,14 +92,17 @@ public:
     StateOwner<TState> BindOwner() noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         if(_phase.load(std::memory_order_relaxed)!=Phase::Uninitialized || _ownerEverBound) return {};
-        _ownerEverBound=true;_ownerAlive=true;_ownerToken=1;
+        _ownerEverBound=true;
+        _ownerAlive=true;
+        _ownerToken=1;
         return StateOwner<TState>(this,_ownerToken);
     }
     StateRuntimeStatus BindPersistence(StatePersistenceBindingView<TState> binding) noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         if(_phase.load(std::memory_order_relaxed)!=Phase::Uninitialized) return StateRuntimeStatus::Frozen;
         if(_persistence || !binding) return StateRuntimeStatus::InvalidConfiguration;
-        _persistence=binding;return StateRuntimeStatus::Success;
+        _persistence=binding;
+        return StateRuntimeStatus::Success;
     }
     StateRuntimeStatus BindConvergence(StateConvergenceBindingView<TState> binding) noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
@@ -108,7 +111,8 @@ public:
         if(_convergence)
             return (_convergence.Owner==binding.Owner && _convergence.MarkLatestDirty==binding.MarkLatestDirty)
                 ? StateRuntimeStatus::Success : StateRuntimeStatus::InvalidConfiguration;
-        _convergence=binding;return StateRuntimeStatus::Success;
+        _convergence=binding;
+        return StateRuntimeStatus::Success;
     }
 
     StateRuntimeStatus StageObserverTarget(StateObserverTargetNode& target) noexcept {
@@ -116,17 +120,25 @@ public:
         const auto phase=_phase.load(std::memory_order_relaxed);
         if(phase==Phase::Running || phase==Phase::Stopping || phase==Phase::Stopped) return StateRuntimeStatus::Frozen;
         if(!target || target.Linked.load(std::memory_order_relaxed)) return StateRuntimeStatus::InvalidConfiguration;
-        target.Next=_observerTargets;target.Linked.store(true,std::memory_order_release);_observerTargets=&target;
+        target.Next=_observerTargets;
+        target.Linked.store(true,std::memory_order_release);
+        _observerTargets=&target;
         return StateRuntimeStatus::Success;
     }
     void RemoveObserverTarget(StateObserverTargetNode& target) noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         auto** current=&_observerTargets;
         while(*current){
-            if(*current==&target){*current=target.Next;target.Next=nullptr;target.Linked.store(false,std::memory_order_release);return;}
+            if(*current==&target){
+                *current=target.Next;
+                target.Next=nullptr;
+                target.Linked.store(false,std::memory_order_release);
+                return;
+            }
             current=&((*current)->Next);
         }
-        target.Linked.store(false,std::memory_order_release);target.Next=nullptr;
+        target.Linked.store(false,std::memory_order_release);
+        target.Next=nullptr;
     }
     bool ValidateStart() const noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
@@ -141,24 +153,39 @@ public:
         if((TState::IsTransmissibleState || bool(_persistence)) && !System::RuntimeIdentity::IsInstalled()) return StateRuntimeStatus::IdentityUnavailable;
         if(_persistence){
             if(!_persistence.Validate(_persistence.Owner)) return StateRuntimeStatus::InvalidConfiguration;
-            Value restored{};Timing::QualifiedTime restoredTruth{};bool restoredHasValue=false;
+            Value restored{};
+            Timing::QualifiedTime restoredTruth{};
+            bool restoredHasValue=false;
             const auto restoredStatus=_persistence.Restore(_persistence.Owner,restored,restoredTruth,restoredHasValue);
             if(restoredStatus!=StateRuntimeStatus::Success) return restoredStatus;
             if(restoredHasValue){
                 Value prepared{};
                 if(!_storage.Prepare(restored,prepared)) return StateRuntimeStatus::PersistenceFailure;
-                _storage.CommitPrepared(prepared);_truthTime=restoredTruth;_version={false,1};_hasValue=true;_restoredDuringInitialize=true;
+                _storage.CommitPrepared(prepared);
+                _truthTime=restoredTruth;
+                _version={false,1};
+                _hasValue=true;
+                _restoredDuringInitialize=true;
             }
         }
         _captureTime=captureTime?captureTime:&CaptureSystemTime;
-        _phase.store(Phase::Prepared,std::memory_order_release);return StateRuntimeStatus::Success;
+        _phase.store(Phase::Prepared,std::memory_order_release);
+        return StateRuntimeStatus::Success;
     }
-    void StartValidated() noexcept {_restoredDuringInitialize=false;_phase.store(Phase::Running,std::memory_order_release);}
+    void StartValidated() noexcept {
+        _restoredDuringInitialize=false;
+        _phase.store(Phase::Running,std::memory_order_release);
+    }
     StateRuntimeStatus RollbackInitialization() noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         if(_phase.load(std::memory_order_relaxed)==Phase::Prepared){
             _captureTime=nullptr;
-            if(_restoredDuringInitialize){_hasValue=false;_version={};_truthTime={};_restoredDuringInitialize=false;}
+            if(_restoredDuringInitialize){
+                _hasValue=false;
+                _version={};
+                _truthTime={};
+                _restoredDuringInitialize=false;
+            }
             _phase.store(Phase::Uninitialized);
         }
         return StateRuntimeStatus::Success;
@@ -166,7 +193,9 @@ public:
     StateRuntimeStatus Shutdown() noexcept {
         auto phase=_phase.load(std::memory_order_acquire);
         if(phase==Phase::Uninitialized || phase==Phase::Stopped) return StateRuntimeStatus::NotInitialized;
-        _phase.store(Phase::Stopping,std::memory_order_release);_phase.store(Phase::Stopped,std::memory_order_release);return StateRuntimeStatus::Success;
+        _phase.store(Phase::Stopping,std::memory_order_release);
+        _phase.store(Phase::Stopped,std::memory_order_release);
+        return StateRuntimeStatus::Success;
     }
     bool IsRunning() const noexcept { return _phase.load(std::memory_order_acquire)==Phase::Running; }
     bool HasValue() const noexcept { std::lock_guard<System::Synchronization::Mutex> lock(_mutex);return _hasValue; }
@@ -176,16 +205,22 @@ public:
     StateVersion Version() const noexcept { std::lock_guard<System::Synchronization::Mutex> lock(_mutex);return _version; }
     bool TryRead(StateSnapshot<TState>& output) const noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
-        if(!_hasValue) return false;_storage.CopyOut(output.Value);output.TruthTime=_truthTime;return true;
+        if(!_hasValue) return false;
+        _storage.CopyOut(output.Value);
+        output.TruthTime=_truthTime;
+        return true;
     }
 };
 
 template<class TState> void StateOwner<TState>::Release() noexcept {
-    auto* runtime=std::exchange(_runtime,nullptr);const auto token=std::exchange(_token,0);if(runtime) runtime->ReleaseOwner(token);
+    auto* runtime=std::exchange(_runtime,nullptr);
+    const auto token=std::exchange(_token,0);
+    if(runtime) runtime->ReleaseOwner(token);
 }
 template<class TState> StateSetStatus StateOwner<TState>::Set(const typename TState::ValueType& candidate){
     if(!_runtime || !_token) return StateSetStatus::OwnerUnavailable;
-    const auto truth=_runtime->_captureTime ? _runtime->_captureTime() : Timing::QualifiedTime{};return _runtime->Set(_token,candidate,truth);
+    const auto truth=_runtime->_captureTime ? _runtime->_captureTime() : Timing::QualifiedTime{};
+    return _runtime->Set(_token,candidate,truth);
 }
 template<class TState> StateSetStatus StateOwner<TState>::Set(const typename TState::ValueType& candidate,Timing::QualifiedTime truthTime){
     return (!_runtime || !_token) ? StateSetStatus::OwnerUnavailable : _runtime->Set(_token,candidate,truthTime);
