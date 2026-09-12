@@ -1,42 +1,21 @@
 #pragma once
-
-#include "ESPressio_StateContract.hpp"
-
-namespace ESPressio {
-namespace State {
-
-/// <summary>Defines semantic equality for values belonging to one state definition.</summary>
-/// <typeparam name="TDefinition">State definition whose meaningful-change semantics are evaluated.</typeparam>
-/// <remarks>The default policy delegates to the value type's equality operator. Specialize this policy per state definition to implement tolerance, deadband, hysteresis, noise rejection, or other domain-specific comparison semantics.</remarks>
-
-template<typename TDefinition>
+#include <type_traits>
+#include <utility>
+namespace ESPressio::State {
+template<class TState>
 struct StateComparison {
-    /// <summary>Value type represented by the state definition.</summary>
-    using Value = StateValueType<TDefinition>;
-
-    /// <summary>Determines whether two values are semantically equal for this state definition.</summary>
-    static bool Equals(const Value& previous, const Value& current) {
-        return previous == current;
+    using Value=typename TState::ValueType;
+    static constexpr bool Equals(const Value& previous,const Value& candidate) noexcept(noexcept(previous==candidate)) {
+        return previous==candidate;
     }
 };
-
-/// <summary>Determines whether two values are semantically equal using the state definition's comparison policy.</summary>
-template<typename TDefinition>
-bool StateValuesEqual(
-    const StateValueType<TDefinition>& previous,
-    const StateValueType<TDefinition>& current
-) {
-    return StateComparison<TDefinition>::Equals(previous, current);
+namespace Detail {
+template<class TState>
+constexpr bool ValidateStateComparison() noexcept {
+    using V=typename TState::ValueType;
+    static_assert(noexcept(StateComparison<TState>::Equals(std::declval<const V&>(),std::declval<const V&>())),
+                  "StateComparison<T>::Equals must be noexcept; authoritative Set cannot run fallible application comparison under commit synchronization");
+    return true;
 }
-
-/// <summary>Determines whether a value represents a meaningful change according to the state definition's comparison policy.</summary>
-template<typename TDefinition>
-bool StateValueChanged(
-    const StateValueType<TDefinition>& previous,
-    const StateValueType<TDefinition>& current
-) {
-    return !StateValuesEqual<TDefinition>(previous, current);
 }
-
-} // namespace State
-} // namespace ESPressio
+}

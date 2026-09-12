@@ -1,60 +1,40 @@
-name: Tests
-
+name: State typed architecture contracts
 on:
   push:
-    branches:
-      - main
-      - 'feature/**'
-      - 'bugfix/**'
-      - 'optimisation/**'
-      - 'structural_realignment_propagation_ESPressio-Mesh'
+    branches: [primitives_redesign]
   pull_request:
-
 jobs:
-  host-tests:
+  host-contracts:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout System propagation branch
-        uses: actions/checkout@v4
-        with:
-          repository: ESPressio-Development-Platform/ESPressio-System
-          ref: primitives_redesign
-          path: ESPressio-System
-      - name: Checkout Primitive propagation branch
-        uses: actions/checkout@v4
-        with:
-          repository: ESPressio-Development-Platform/ESPressio-Primitive
-          ref: primitives_redesign
-          path: ESPressio-Primitive
-      - name: Checkout Observable working branch
-        uses: actions/checkout@v4
-        with:
-          repository: ESPressio-Development-Platform/ESPressio-Observable
-          ref: primitives_redesign
-          path: ESPressio-Observable
-      - name: Configure
-        run: >-
-          cmake -S tests -B build
-          -DESPRESSIO_SYSTEM_DIR=${{ github.workspace }}/ESPressio-System/src
-          -DESPRESSIO_PRIMITIVE_DIR=${{ github.workspace }}/ESPressio-Primitive/src
-          -DESPRESSIO_OBSERVABLE_DIR=${{ github.workspace }}/ESPressio-Observable/src
-      - name: Build
+      - uses: actions/checkout@v4
+        with: {repository: ESPressio-Development-Platform/ESPressio-System, ref: primitives_redesign, path: deps/ESPressio-System}
+      - uses: actions/checkout@v4
+        with: {repository: ESPressio-Development-Platform/ESPressio-Primitive, ref: primitives_redesign, path: deps/ESPressio-Primitive}
+      - uses: actions/checkout@v4
+        with: {repository: ESPressio-Development-Platform/ESPressio-Units, ref: primitives_redesign, path: deps/ESPressio-Units}
+      - uses: actions/checkout@v4
+        with: {repository: ESPressio-Development-Platform/ESPressio-Observable, ref: primitives_redesign, path: deps/ESPressio-Observable}
+      - uses: actions/checkout@v4
+        with: {repository: ESPressio-Development-Platform/ESPressio-Timing, ref: primitives_redesign, path: deps/ESPressio-Timing}
+      - name: Configure typed State contracts
+        run: cmake -S tests -B build -DESPRESSIO_DEPENDENCIES="$GITHUB_WORKSPACE/deps"
+      - name: Build typed State contracts
         run: cmake --build build --parallel
-      - name: Test
+      - name: Run typed State contracts
         run: ctest --test-dir build --output-on-failure
-
-  esp32-core:
+  esp32-typed-surface:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: '3.x'}
       - run: pip install platformio
-      - name: Create RTTI-free core integration project
+      - name: Compile typed State surface without RTTI
         run: |
-          mkdir -p /tmp/state-core/src
-          cat > /tmp/state-core/platformio.ini <<'EOF'
+          mkdir -p /tmp/state-typed/src
+          cat > /tmp/state-typed/platformio.ini <<'PIO'
           [env:esp32dev]
           platform = espressif32
           board = esp32dev
@@ -63,118 +43,24 @@ jobs:
               file://${{ github.workspace }}
               https://github.com/ESPressio-Development-Platform/ESPressio-System.git#primitives_redesign
               https://github.com/ESPressio-Development-Platform/ESPressio-Primitive.git#primitives_redesign
-              https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#primitives_redesign
-          build_unflags = -std=gnu++11
-          build_flags = -std=gnu++17 -fno-rtti
-          EOF
-          cat > /tmp/state-core/src/main.cpp <<'EOF'
-          #include <Arduino.h>
-          #include <ESPressio_State.hpp>
-          #define ESPRESSIO_STATE_ENABLE_INTROSPECTION 0
-          #define ESPRESSIO_STATE_ENABLE_SERIALIZATION 0
-          #include <ESPressio_StateIntrospection.hpp>
-          #include <ESPressio_StateSerialization.hpp>
-          struct LedState { using Value = bool; static constexpr ESPressio::State::StateTypeId Id = 1; };
-          using Contract = ESPressio::State::StateContract<LedState>;
-          ESPressio::State::RemoteStateManager<Contract, 2> remoteState;
-          ESPressio::State::StatePublisher<Contract> publisher;
-          void setup() {}
-          void loop() {}
-          EOF
-      - run: pio run -d /tmp/state-core
-
-  esp32-diagnostics:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: {python-version: '3.x'}
-      - run: pip install platformio
-      - name: Create RTTI-free diagnostic integration project
-        run: |
-          mkdir -p /tmp/state-diagnostics/src
-          cat > /tmp/state-diagnostics/platformio.ini <<'EOF'
-          [env:esp32dev]
-          platform = espressif32
-          board = esp32dev
-          framework = arduino
-          lib_deps =
-              file://${{ github.workspace }}
-              https://github.com/ESPressio-Development-Platform/ESPressio-System.git#primitives_redesign
-              https://github.com/ESPressio-Development-Platform/ESPressio-Primitive.git#primitives_redesign
-              https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#primitives_redesign
-          build_unflags = -std=gnu++11
-          build_flags = -std=gnu++17 -fno-rtti
-          EOF
-          cat > /tmp/state-diagnostics/src/main.cpp <<'EOF'
-          #include <Arduino.h>
-          #include <ESPressio_State.hpp>
-          #include <ESPressio_StateIntrospection.hpp>
-          #include <ESPressio_StateSerialization.hpp>
-          struct LedState { using Value = bool; static constexpr ESPressio::State::StateTypeId Id = 1; static constexpr const char* Name = "led.enabled"; };
-          struct CounterState { using Value = uint32_t; static constexpr ESPressio::State::StateTypeId Id = 2; };
-          using Contract = ESPressio::State::StateContract<LedState, CounterState>;
-          ESPressio::State::RemoteStateManager<Contract, 2> remoteState;
-          void setup() {
-              ESPressio::State::DeviceIdentifier::Storage identity{};
-              identity[15] = 1;
-              const ESPressio::State::DeviceIdentifier device(identity);
-              remoteState.SetReachability(device, ESPressio::State::StateSourceReachability::Reachable);
-              remoteState.Apply<LedState>(device,1,1,true);
-              remoteState.Apply<CounterState>(device,1,1,42);
-              const char* name = nullptr;
-              ESPressio::State::StateIntrospection<Contract>::TryGetName(LedState::Id,name);
-              ESPressio::State::StateSerialization<Contract>::ForEachRemoteState(remoteState,[](const auto& record){ (void)record.TypeId; (void)record.PayloadSize; (void)record.Availability; (void)record.Reachability; });
-          }
-          void loop() {}
-          EOF
-      - run: pio run -d /tmp/state-diagnostics
-
-  esp32-observer-thread:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: {python-version: '3.x'}
-      - run: pip install platformio
-      - name: Create RTTI-free observer integration project
-        run: |
-          mkdir -p /tmp/state-observer/src
-          cat > /tmp/state-observer/platformio.ini <<'EOF'
-          [env:esp32dev]
-          platform = espressif32
-          board = esp32dev
-          framework = arduino
-          lib_deps =
-              file://${{ github.workspace }}
-              https://github.com/ESPressio-Development-Platform/ESPressio-System.git#primitives_redesign
-              https://github.com/ESPressio-Development-Platform/ESPressio-Primitive.git#primitives_redesign
-              https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#primitives_redesign
               https://github.com/ESPressio-Development-Platform/ESPressio-Units.git#primitives_redesign
+              https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#primitives_redesign
               https://github.com/ESPressio-Development-Platform/ESPressio-Timing.git#primitives_redesign
-              https://github.com/ESPressio-Development-Platform/ESPressio-Threads.git#primitives_redesign
           build_unflags = -std=gnu++11 -frtti
           build_flags = -std=gnu++17 -fno-rtti
-          EOF
-          cat > /tmp/state-observer/src/main.cpp <<'EOF'
+          PIO
+          cat > /tmp/state-typed/src/main.cpp <<'CPP'
           #include <Arduino.h>
-          #include <ESPressio_State.hpp>
-          #include <ESPressio_RemoteStateObserverThread.hpp>
-          struct LedState { using Value = bool; static constexpr ESPressio::State::StateTypeId Id = 1; };
-          using Contract = ESPressio::State::StateContract<LedState>;
-          class LedObserver final : public ESPressio::State::IRemoteStateObserver<LedState>, public ESPressio::State::IRemoteStateAvailabilityObserver, public ESPressio::State::IRemoteStateReachabilityObserver {
-          public:
-              void OnRemoteStateChanged(ESPressio::State::StateTag<LedState>, const ESPressio::State::DeviceIdentifier&, bool hasPreviousValue, const bool& previousValue, const bool& latestValue, ESPressio::State::StateEpoch, ESPressio::State::StateRevision, ESPressio::State::StateAvailabilityStatus) override { (void)hasPreviousValue; (void)previousValue; (void)latestValue; }
-              void OnRemoteStateAvailabilityChanged(const ESPressio::State::StateAddress&, ESPressio::State::StateAvailabilityStatus, ESPressio::State::StateAvailabilityStatus) override {}
-              void OnRemoteStateReachabilityChanged(const ESPressio::State::DeviceIdentifier&, ESPressio::State::StateSourceReachability, ESPressio::State::StateSourceReachability) override {}
+          #include <ESPressio_States.hpp>
+          #include <ESPressio_TypeDirectory.hpp>
+          struct LedState final : ESPressio::State::State<LedState,bool> {
+              static constexpr ESPressio::State::StateTypeId TypeId{1};
+              static constexpr const char* CanonicalName="Demo.State.Led";
           };
-          ESPressio::State::RemoteStateManager<Contract,2> remoteState;
-          ESPressio::State::RemoteStateObserverThread<Contract,2> observerThread(remoteState);
-          LedObserver observer;
-          ESPressio::Observable::ObserverHandlePtr stateObserverHandle;
-          ESPressio::Observable::ObserverHandlePtr availabilityObserverHandle;
-          ESPressio::Observable::ObserverHandlePtr reachabilityObserverHandle;
-          void setup(){ stateObserverHandle=observerThread.RegisterStateObserver<LedState>(&observer); availabilityObserverHandle=observerThread.RegisterAvailabilityObserver(&observer); reachabilityObserverHandle=observerThread.RegisterReachabilityObserver(&observer); observerThread.Prepare(); }
-          void loop() {}
-          EOF
-      - run: pio run -d /tmp/state-observer
+          using States=ESPressio::State::Runtime<ESPressio::State::TypeConfiguration<LedState>>;
+          ESPressio::Primitive::TypeDirectory<1> directory;
+          States states;
+          void setup(){ (void)directory.Register<LedState>();(void)directory.Initialize(); }
+          void loop(){}
+          CPP
+          pio run -d /tmp/state-typed

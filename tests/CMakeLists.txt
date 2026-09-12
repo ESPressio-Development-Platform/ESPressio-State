@@ -1,69 +1,29 @@
 cmake_minimum_required(VERSION 3.16)
-project(ESPressioStateTests LANGUAGES CXX)
-
+project(ESPressioStateTypedContracts LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-
-set(
-    ESPRESSIO_SYSTEM_DIR
-    "${CMAKE_CURRENT_LIST_DIR}/../../ESPressio-System/src"
-    CACHE PATH
-    "Path to ESPressio System src"
-)
-set(
-    ESPRESSIO_PRIMITIVE_DIR
-    "${CMAKE_CURRENT_LIST_DIR}/../../ESPressio-Primitive/src"
-    CACHE PATH
-    "Path to ESPressio Primitive src"
-)
-set(
-    ESPRESSIO_OBSERVABLE_DIR
-    "${CMAKE_CURRENT_LIST_DIR}/../../ESPressio-Observable/src"
-    CACHE PATH
-    "Path to ESPressio Observable src"
-)
-
-if(NOT EXISTS "${ESPRESSIO_SYSTEM_DIR}/ESPressio_Memory.hpp")
-    message(FATAL_ERROR "ESPressio System headers not found at ${ESPRESSIO_SYSTEM_DIR}")
-endif()
-if(NOT EXISTS "${ESPRESSIO_PRIMITIVE_DIR}/ESPressio_Primitive.hpp")
-    message(FATAL_ERROR "ESPressio Primitive headers not found at ${ESPRESSIO_PRIMITIVE_DIR}")
-endif()
-if(NOT EXISTS "${ESPRESSIO_OBSERVABLE_DIR}/ESPressio_Observable.hpp")
-    message(FATAL_ERROR "ESPressio Observable headers not found at ${ESPRESSIO_OBSERVABLE_DIR}")
-endif()
-
-set(ESPRESSIO_STATE_TEST_INCLUDE_DIRS
-    ../src
-    ${ESPRESSIO_SYSTEM_DIR}
-    ${ESPRESSIO_PRIMITIVE_DIR}
-    ${ESPRESSIO_OBSERVABLE_DIR}
-)
-
-enable_testing()
-
-foreach(target IN ITEMS
-    test_state_foundation
-    test_state_introspection
-    test_state_protocol
-    test_state_comparison
-    test_state_comparison_remote
-    test_state_source_callback_boundaries
-    test_local_state_registry
-    test_state_publisher_reentrancy
-    test_remote_state_reentrancy
-)
-    add_executable(${target} ${target}.cpp)
-    target_include_directories(${target} PRIVATE ${ESPRESSIO_STATE_TEST_INCLUDE_DIRS})
+set(ESPRESSIO_DEPENDENCIES "${CMAKE_CURRENT_LIST_DIR}/.." CACHE PATH "Sibling ESPressio dependency checkout root")
+set(STATE_INCLUDES ../src)
+foreach(dependency System Primitive Units Observable Timing)
+    list(APPEND STATE_INCLUDES "${ESPRESSIO_DEPENDENCIES}/ESPressio-${dependency}/src")
 endforeach()
-
-add_test(NAME state_foundation COMMAND test_state_foundation)
-add_test(NAME state_introspection COMMAND test_state_introspection)
-add_test(NAME state_protocol COMMAND test_state_protocol)
-add_test(NAME state_comparison COMMAND test_state_comparison)
-add_test(NAME state_comparison_remote COMMAND test_state_comparison_remote)
-add_test(NAME state_source_callback_boundaries COMMAND test_state_source_callback_boundaries)
-add_test(NAME local_state_registry COMMAND test_local_state_registry)
-add_test(NAME state_publisher_reentrancy COMMAND test_state_publisher_reentrancy)
-add_test(NAME remote_state_reentrancy COMMAND test_remote_state_reentrancy)
+enable_testing()
+foreach(name type_contract version local_runtime owner_runtime)
+    add_executable(state_${name} test_state_${name}.cpp)
+    target_include_directories(state_${name} PRIVATE ${STATE_INCLUDES})
+    target_compile_options(state_${name} PRIVATE -Wall -Wextra -Werror -fno-rtti -UNDEBUG)
+    add_test(NAME state_${name} COMMAND state_${name})
+endforeach()
+set(NEGATIVE_INCLUDE_ARGS "-I${CMAKE_CURRENT_LIST_DIR}/../src")
+foreach(dependency System Primitive Units Observable Timing)
+    list(APPEND NEGATIVE_INCLUDE_ARGS "-I${ESPRESSIO_DEPENDENCIES}/ESPressio-${dependency}/src")
+endforeach()
+function(add_state_compile_failure name)
+    add_test(NAME state_compile_fail_${name}
+        COMMAND ${CMAKE_CXX_COMPILER} -std=c++17 -fno-rtti -Wall -Wextra -Werror -fsyntax-only ${NEGATIVE_INCLUDE_ARGS}
+            "${CMAKE_CURRENT_LIST_DIR}/negative/${name}.cpp")
+    set_tests_properties(state_compile_fail_${name} PROPERTIES WILL_FAIL TRUE)
+endfunction()
+add_state_compile_failure(zero_state_type_id)
+add_state_compile_failure(invalid_state_storage_traits)
