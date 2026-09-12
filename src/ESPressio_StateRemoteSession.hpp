@@ -17,6 +17,7 @@ enum class StateRemoteSessionState : std::uint8_t {
 
 enum class StateRemoteStatus : std::uint8_t {
     Success,
+    NotRunning,
     CapacityUnavailable,
     NotFound,
     InvalidIdentity,
