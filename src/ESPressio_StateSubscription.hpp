@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include "ESPressio_StateRemoteSession.hpp"
@@ -13,10 +14,12 @@ enum class StateSubscriptionSelectorMode : std::uint8_t {
     AnyDevice
 };
 
-/// <summary>Result of starting an adapter-expanded AnyDevice subscription.</summary>
+/// <summary>Bounded result of starting an adapter-expanded AnyDevice subscription.</summary>
+template<std::size_t Capacity>
 struct StateAnySubscriptionResult final {
     StateRemoteStatus Status=StateRemoteStatus::TransportUnavailable;
-    std::size_t SessionsStarted=0;
+    std::array<StateSubscriptionHandle,Capacity> Sessions{};
+    std::size_t SessionCount=0;
     constexpr explicit operator bool() const noexcept { return Status==StateRemoteStatus::Success; }
 };
 
