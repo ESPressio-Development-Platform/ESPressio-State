@@ -10,6 +10,7 @@
 #include "ESPressio_StateComparison.hpp"
 #include "ESPressio_StateObserverTarget.hpp"
 #include "ESPressio_StateOwner.hpp"
+#include "ESPressio_StatePersistence.hpp"
 #include "ESPressio_StateSnapshot.hpp"
 #include "ESPressio_StateVersion.hpp"
 
@@ -38,8 +39,10 @@ class StateTypeRuntime final {
     bool _hasValue=false;
     bool _ownerEverBound=false;
     bool _ownerAlive=false;
+    bool _restoredDuringInitialize=false;
     std::uint64_t _ownerToken=0;
     StateObserverTargetNode* _observerTargets=nullptr;
+    StatePersistenceBindingView<TState> _persistence{};
     std::atomic<Phase> _phase{Phase::Uninitialized};
     Timing::QualifiedTime (*_captureTime)()=nullptr;
 
@@ -64,10 +67,15 @@ class StateTypeRuntime final {
         if(_hasValue){
             Value current{};
             _storage.CopyOut(current);
-            // Equal State is a strict semantic no-op. Supplied TruthTime cannot refresh it.
+            // Equal State is a strict semantic no-op. Supplied TruthTime cannot refresh it,
+            // persistence is not rewritten and observers/convergence are not dirtied.
             if(StateComparison<TState>::Equals(current,prepared)) return StateSetStatus::NoChange;
         }
         const auto next=NextStateVersion(_version,_hasValue);
+        // Durable authority is established before RAM publication. A failed/ambiguous
+        // atomic replace consumes no compact version and exposes no observer change.
+        if(_persistence && !_persistence.Commit(_persistence.Owner,prepared,truthTime))
+            return StateSetStatus::PersistenceFailed;
         _storage.CommitPrepared(prepared);
         _truthTime=truthTime;
         _version=next;
@@ -90,6 +98,14 @@ public:
         _ownerEverBound=true;_ownerAlive=true;
         _ownerToken=1;
         return StateOwner<TState>(this,_ownerToken);
+    }
+
+    StateRuntimeStatus BindPersistence(StatePersistenceBindingView<TState> binding) noexcept {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        if(_phase.load(std::memory_order_relaxed)!=Phase::Uninitialized) return StateRuntimeStatus::Frozen;
+        if(_persistence || !binding) return StateRuntimeStatus::InvalidConfiguration;
+        _persistence=binding;
+        return StateRuntimeStatus::Success;
     }
 
     /// <summary>Stages one fixed observer endpoint before the Type topology freezes.</summary>
@@ -129,18 +145,40 @@ public:
     StateRuntimeStatus Initialize(Timing::QualifiedTime(*captureTime)()=nullptr) noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         if(_phase.load(std::memory_order_relaxed)!=Phase::Uninitialized) return StateRuntimeStatus::AlreadyInitialized;
-        // P4 identity is required only by a Transmissible State. Purely local/Serializable
-        // State remains available when distributed identity bootstrap is unavailable.
-        if constexpr(TState::IsTransmissibleState)
-            if(!System::RuntimeIdentity::IsInstalled()) return StateRuntimeStatus::IdentityUnavailable;
+        // P4 identity is required by Transmissible State and by persistent authoritative
+        // records, which are device-bound. Purely volatile Local/Serializable State remains local.
+        if((TState::IsTransmissibleState || bool(_persistence)) && !System::RuntimeIdentity::IsInstalled())
+            return StateRuntimeStatus::IdentityUnavailable;
+        if(_persistence){
+            if(!_persistence.Validate(_persistence.Owner)) return StateRuntimeStatus::InvalidConfiguration;
+            Value restored{};Timing::QualifiedTime restoredTruth{};bool restoredHasValue=false;
+            const auto restoredStatus=_persistence.Restore(_persistence.Owner,restored,restoredTruth,restoredHasValue);
+            if(restoredStatus!=StateRuntimeStatus::Success) return restoredStatus;
+            if(restoredHasValue){
+                Value prepared{};
+                if(!_storage.Prepare(restored,prepared)) return StateRuntimeStatus::PersistenceFailure;
+                _storage.CommitPrepared(prepared);
+                _truthTime=restoredTruth;
+                _version={false,1};
+                _hasValue=true;
+                _restoredDuringInitialize=true;
+            }
+        }
         _captureTime=captureTime?captureTime:&CaptureSystemTime;
         _phase.store(Phase::Prepared,std::memory_order_release);
         return StateRuntimeStatus::Success;
     }
-    void StartValidated() noexcept { _phase.store(Phase::Running,std::memory_order_release); }
+    void StartValidated() noexcept {
+        _restoredDuringInitialize=false;
+        _phase.store(Phase::Running,std::memory_order_release);
+    }
     StateRuntimeStatus RollbackInitialization() noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
-        if(_phase.load(std::memory_order_relaxed)==Phase::Prepared){_captureTime=nullptr;_phase.store(Phase::Uninitialized);}
+        if(_phase.load(std::memory_order_relaxed)==Phase::Prepared){
+            _captureTime=nullptr;
+            if(_restoredDuringInitialize){_hasValue=false;_version={};_truthTime={};_restoredDuringInitialize=false;}
+            _phase.store(Phase::Uninitialized);
+        }
         return StateRuntimeStatus::Success;
     }
     StateRuntimeStatus Shutdown() noexcept {
@@ -154,6 +192,7 @@ public:
     bool HasValue() const noexcept { std::lock_guard<System::Synchronization::Mutex> lock(_mutex);return _hasValue; }
     bool HasOwner() const noexcept { std::lock_guard<System::Synchronization::Mutex> lock(_mutex);return _ownerEverBound; }
     bool OwnerAlive() const noexcept { std::lock_guard<System::Synchronization::Mutex> lock(_mutex);return _ownerAlive; }
+    bool HasPersistence() const noexcept { std::lock_guard<System::Synchronization::Mutex> lock(_mutex);return bool(_persistence); }
     StateVersion Version() const noexcept { std::lock_guard<System::Synchronization::Mutex> lock(_mutex);return _version; }
     bool TryRead(StateSnapshot<TState>& output) const noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
