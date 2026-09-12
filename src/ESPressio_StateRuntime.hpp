@@ -150,6 +150,7 @@ class Runtime final {
     }
     template<class C>
     StateRuntimeStatus BindConvergenceOne() noexcept {
+        Table<typename C::StateType>().InitializeSynchronization();
         if constexpr(C::SubscriberCapacity==0) return StateRuntimeStatus::Success;
         else return StateTypeRuntime<typename C::StateType>::Get().BindConvergence(Table<typename C::StateType>().ConvergenceView());
     }
@@ -182,6 +183,7 @@ class Runtime final {
             case StateRemoteStatus::Older: return D::AlreadyAccepted;
             case StateRemoteStatus::CapacityUnavailable: return D::ResourceUnavailable;
             case StateRemoteStatus::NotRunning:
+            case StateRemoteStatus::Busy:
             case StateRemoteStatus::TransportUnavailable: return D::TemporarilyUnavailable;
             case StateRemoteStatus::NotFound:
             case StateRemoteStatus::InvalidIdentity:
@@ -197,7 +199,7 @@ class Runtime final {
     }
     template<class TState>
     Primitive::PrimitiveAdmissionDisposition OfferReply(const StateOutboundMessage<TState>& reply) noexcept {
-        const auto offered=StateTypeRuntime<TState>::Get().AdmitOutbound(reply);
+        const auto offered=StateTypeRuntime<TState>::Get().template AdmitOutbound<true>(reply);
         return offered ? Primitive::PrimitiveAdmissionDisposition::Accepted
                        : Primitive::PrimitiveAdmissionDisposition::TemporarilyUnavailable;
     }
@@ -310,6 +312,7 @@ public:
         if(_initialized) return StateRuntimeStatus::AlreadyInitialized;
         if(_configurationError) return StateRuntimeStatus::InvalidConfiguration;
         if(!directory.IsFrozen()) return StateRuntimeStatus::InvalidDirectory;
+        { std::lock_guard<System::Synchronization::Mutex> lock(_tokenMutex); }
         Detail::StateProcessTokenAuthority::Initialize();
         StateRuntimeStatus status=StateRuntimeStatus::Success;
         bool ok=true;
@@ -568,7 +571,9 @@ public:
     /// <summary>Decodes, validates and commits one Type-specific remote State message.</summary>
     /// <remarks>The borrowed bytes are fully decoded before mutation. Success means the destination
     /// State-family boundary has committed the applicable bounded session/replica state. Required
-    /// replies are offered only after that commit and may return TemporarilyUnavailable for retry.</remarks>
+    /// replies are offered only after that commit and may return TemporarilyUnavailable for retry.
+    /// All framework locks in this boundary are single nonblocking attempts against storage
+    /// resolved during Initialize. A Busy result never means NoValue or token exhaustion.</remarks>
     template<class TState,class Format>
     StateRemoteAdmissionResult AdmitRemote(const std::uint8_t* data,std::size_t size,
                                            StateValidatedIngressContext ingress) noexcept {
@@ -594,19 +599,21 @@ public:
 
         switch(decoded.Kind) {
             case StateMessageKind::SubscribeRequest: {
-                status=Table<TState>().ReserveSubscriber(decoded.Requester,decoded.Session);
+                status=Table<TState>().template ReserveSubscriber<true>(decoded.Requester,decoded.Session);
                 if(status!=StateRemoteStatus::Success && status!=StateRemoteStatus::Duplicate)
                     return {MapRemoteAdmission(status),StateWireStatus::Success};
                 StateSnapshot<TState> snapshot{};StateVersion version{};
-                bool hasValue=StateTypeRuntime<TState>::Get().TryReadVersioned(snapshot,version);
-                const auto offered=Table<TState>().PrepareSubscriberEstablishment(decoded.Requester,decoded.Session,hasValue,version,snapshot);
+                const auto captured=StateTypeRuntime<TState>::Get().TryCaptureVersioned(snapshot,version);
+                if(captured==Detail::StateCaptureStatus::Busy) return {D::TemporarilyUnavailable,StateWireStatus::Success};
+                bool hasValue=captured==Detail::StateCaptureStatus::Success;
+                const auto offered=Table<TState>().template PrepareSubscriberEstablishment<true>(decoded.Requester,decoded.Session,hasValue,version,snapshot);
                 if(offered!=StateRemoteStatus::Success) return {MapRemoteAdmission(offered),StateWireStatus::Success};
                 reply.Kind=hasValue?StateMessageKind::SubscribeSnapshot:StateMessageKind::SubscribeNoValue;
                 reply.Version=version;reply.Snapshot=snapshot;reply.HasSnapshot=hasValue;
                 return {OfferReply(reply),StateWireStatus::Success};
             }
             case StateMessageKind::SubscribeSnapshot:
-                status=Table<TState>().InstallSubscribeSnapshot(decoded.Owner,decoded.Session,decoded.Version,decoded.Snapshot);
+                status=Table<TState>().template InstallSubscribeSnapshot<true>(decoded.Owner,decoded.Session,decoded.Version,decoded.Snapshot);
                 if(status==StateRemoteStatus::Success || status==StateRemoteStatus::Duplicate) {
                     reply.Kind=StateMessageKind::SubscribeAccepted;
                     const auto out=OfferReply(reply);
@@ -614,23 +621,28 @@ public:
                 }
                 break;
             case StateMessageKind::SubscribeNoValue:
-                status=Table<TState>().InstallSubscribeNoValue(decoded.Owner,decoded.Session);
+                status=Table<TState>().template InstallSubscribeNoValue<true>(decoded.Owner,decoded.Session);
                 if(status==StateRemoteStatus::Success || status==StateRemoteStatus::Duplicate) {
                     reply.Kind=StateMessageKind::SubscribeAccepted;
                     const auto out=OfferReply(reply);
                     return {out==D::Accepted?MapRemoteAdmission(status):out,StateWireStatus::Success};
                 }
                 break;
-            case StateMessageKind::SubscribeAccepted:
-                status=Table<TState>().AcceptSubscriberEstablishment(decoded.Requester,decoded.Session,
-                                                                      StateTypeRuntime<TState>::Get().Version());
+            case StateMessageKind::SubscribeAccepted: {
+                StateSnapshot<TState> snapshot{};StateVersion version{};
+                if(StateTypeRuntime<TState>::Get().TryCaptureVersioned(snapshot,version)==Detail::StateCaptureStatus::Busy)
+                    return {D::TemporarilyUnavailable,StateWireStatus::Success};
+                status=Table<TState>().template AcceptSubscriberEstablishment<true>(decoded.Requester,decoded.Session,
+                                                                      version);
                 break;
+            }
             case StateMessageKind::SubscribeRejected: {
-                std::lock_guard<System::Synchronization::Mutex> lock(_tokenMutex);
+                std::unique_lock<System::Synchronization::Mutex> lock(_tokenMutex,std::try_to_lock);
+                if(!lock) return {D::TemporarilyUnavailable,StateWireStatus::Success};
                 const StateSubscriptionHandle handle{TState::TypeId,decoded.Owner.Device,decoded.Session};
                 auto& selector=Selector<TState>();
                 if(!selector.Contains(handle)) { status=StateRemoteStatus::SessionMismatch;break; }
-                status=Table<TState>().RejectSubscription(decoded.Owner.Device,decoded.Session);
+                status=Table<TState>().template RejectSubscription<true>(decoded.Owner.Device,decoded.Session);
                 if(status==StateRemoteStatus::Success) {
                     (void)selector.Remove(handle);
                     if(selector.Count==0 && selector.InFlight==0) selector.Mode=StateSubscriptionSelectorMode::None;
@@ -638,10 +650,10 @@ public:
                 break;
             }
             case StateMessageKind::UnsubscribeRequest:
-                status=Table<TState>().RemoveSubscriber(decoded.Requester,decoded.Session);
+                status=Table<TState>().template RemoveSubscriber<true>(decoded.Requester,decoded.Session);
                 break;
             case StateMessageKind::BaselineSnapshot:
-                status=Table<TState>().InstallBaselineSnapshot(decoded.Owner,decoded.Session,decoded.Version,decoded.Snapshot);
+                status=Table<TState>().template InstallBaselineSnapshot<true>(decoded.Owner,decoded.Session,decoded.Version,decoded.Snapshot);
                 if(status==StateRemoteStatus::Success || status==StateRemoteStatus::Duplicate) {
                     reply.Kind=StateMessageKind::BaselineAccepted;reply.Version=decoded.Version;
                     const auto out=OfferReply(reply);
@@ -649,10 +661,10 @@ public:
                 }
                 break;
             case StateMessageKind::BaselineAccepted:
-                status=Table<TState>().AcceptSubscriberBaseline(decoded.Requester,decoded.Session,decoded.Version);
+                status=Table<TState>().template AcceptSubscriberBaseline<true>(decoded.Requester,decoded.Session,decoded.Version);
                 break;
             case StateMessageKind::Publication:
-                status=Table<TState>().ApplyPublication(decoded.Owner,decoded.Session,decoded.Version,decoded.Snapshot);
+                status=Table<TState>().template ApplyPublication<true>(decoded.Owner,decoded.Session,decoded.Version,decoded.Snapshot);
                 if constexpr(StateRemoteReplicaTable<TState,
                     Detail::ConfigurationForT<TState,TConfigurations...>::RemoteOwnerCapacity,
                     Detail::ConfigurationForT<TState,TConfigurations...>::SubscriberCapacity>::RequiresAcknowledgement) {
@@ -664,11 +676,11 @@ public:
                 }
                 break;
             case StateMessageKind::PublicationAccepted:
-                status=Table<TState>().AcceptSubscriberBaseline(decoded.Requester,decoded.Session,decoded.Version);
+                status=Table<TState>().template AcceptSubscriberBaseline<true>(decoded.Requester,decoded.Session,decoded.Version);
                 break;
             case StateMessageKind::ResyncRequired: {
                 StateResyncToken token{};
-                status=Table<TState>().BeginRemoteResync(decoded.Owner,decoded.Session,token);
+                status=Table<TState>().template BeginRemoteResync<true>(decoded.Owner,decoded.Session,token);
                 if(status==StateRemoteStatus::TokenExhausted)
                     return {D::ResourceUnavailable,StateWireStatus::Success};
                 if(status!=StateRemoteStatus::Success) break;
@@ -677,26 +689,31 @@ public:
             }
             case StateMessageKind::ResyncRequest: {
                 StateSnapshot<TState> snapshot{};StateVersion version{};
-                if(!StateTypeRuntime<TState>::Get().TryReadVersioned(snapshot,version))
-                    return {D::Rejected,StateWireStatus::Success};
-                status=Table<TState>().PrepareSubscriberResync(decoded.Requester,decoded.Session,decoded.Resync,version,snapshot);
+                const auto captured=StateTypeRuntime<TState>::Get().TryCaptureVersioned(snapshot,version);
+                if(captured==Detail::StateCaptureStatus::Busy) return {D::TemporarilyUnavailable,StateWireStatus::Success};
+                if(captured==Detail::StateCaptureStatus::NoValue) return {D::Rejected,StateWireStatus::Success};
+                status=Table<TState>().template PrepareSubscriberResync<true>(decoded.Requester,decoded.Session,decoded.Resync,version,snapshot);
                 if(status!=StateRemoteStatus::Success) break;
                 reply.Kind=StateMessageKind::ResyncSnapshot;reply.Resync=decoded.Resync;
                 reply.Version=version;reply.Snapshot=snapshot;reply.HasSnapshot=true;
                 return {OfferReply(reply),StateWireStatus::Success};
             }
             case StateMessageKind::ResyncSnapshot:
-                status=Table<TState>().InstallResyncSnapshot(decoded.Owner,decoded.Session,decoded.Resync,decoded.Version,decoded.Snapshot);
+                status=Table<TState>().template InstallResyncSnapshot<true>(decoded.Owner,decoded.Session,decoded.Resync,decoded.Version,decoded.Snapshot);
                 if(status==StateRemoteStatus::Success || status==StateRemoteStatus::Duplicate) {
                     reply.Kind=StateMessageKind::ResyncAccepted;reply.Resync=decoded.Resync;reply.Version=decoded.Version;
                     const auto out=OfferReply(reply);
                     return {out==D::Accepted?MapRemoteAdmission(status):out,StateWireStatus::Success};
                 }
                 break;
-            case StateMessageKind::ResyncAccepted:
-                status=Table<TState>().AcceptSubscriberResync(decoded.Requester,decoded.Session,decoded.Resync,decoded.Version,
-                                                               StateTypeRuntime<TState>::Get().Version());
+            case StateMessageKind::ResyncAccepted: {
+                StateSnapshot<TState> snapshot{};StateVersion version{};
+                if(StateTypeRuntime<TState>::Get().TryCaptureVersioned(snapshot,version)==Detail::StateCaptureStatus::Busy)
+                    return {D::TemporarilyUnavailable,StateWireStatus::Success};
+                status=Table<TState>().template AcceptSubscriberResync<true>(decoded.Requester,decoded.Session,decoded.Resync,decoded.Version,
+                                                               version);
                 break;
+            }
         }
         return {MapRemoteAdmission(status),StateWireStatus::Success};
     }

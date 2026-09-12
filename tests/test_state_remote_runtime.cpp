@@ -6,6 +6,8 @@
 #include <cassert>
 #include <cstdint>
 #include <string_view>
+#include <memory>
+#include <mutex>
 
 using namespace ESPressio;
 namespace S=ESPressio::State;
@@ -51,7 +53,30 @@ struct Adapter final {
     }
 };
 
+// Instrument the provider boundary: family ingress may only attempt locks,
+// including when a selected attempt fails. Initialization may resolve storage.
+struct AdmissionMutex final : System::Synchronization::IMutex {
+    inline static bool NonBlockingOnly=false;
+    inline static unsigned Attempts=0,RejectAttempt=0;
+    std::mutex Mutex;
+    void Lock() noexcept override { assert(!NonBlockingOnly);Mutex.lock(); }
+    bool TryLock() noexcept override {
+        if(NonBlockingOnly && ++Attempts==RejectAttempt) return false;
+        return Mutex.try_lock();
+    }
+    void Unlock() noexcept override { Mutex.unlock(); }
+};
+struct AdmissionSynchronization final : System::Synchronization::ISynchronizationProvider {
+    std::unique_ptr<System::Synchronization::ISignal> CreateBinarySignal(bool) override { return {}; }
+    std::unique_ptr<System::Synchronization::IMutex> CreateMutex() override {
+        assert(!AdmissionMutex::NonBlockingOnly);
+        return std::make_unique<AdmissionMutex>();
+    }
+};
+
 int main(){
+    static AdmissionSynchronization synchronization;
+    System::Synchronization::SetProvider(&synchronization);
     using Format=Serializable::DirectBinary;
     const auto local=Identity(1,1),remoteOwner=Identity(2,2),remoteRequester=Identity(3,3);
     assert(System::RuntimeIdentity::Install(local)==System::RuntimeIdentity::InstallationStatus::Success);
@@ -67,6 +92,12 @@ int main(){
     assert(runtime.BindTransport(binding)==S::StateRuntimeStatus::Success);
     assert(runtime.Initialize(directory.View(),&Capture)==S::StateRuntimeStatus::Success);
     assert(runtime.Start()==S::StateRuntimeStatus::Success);
+    auto admit=[&](const std::uint8_t* data,std::size_t size,S::StateValidatedIngressContext ingress) {
+        AdmissionMutex::Attempts=0;AdmissionMutex::NonBlockingOnly=true;
+        const auto result=runtime.AdmitRemote<RuntimeState,Format>(data,size,ingress);
+        AdmissionMutex::NonBlockingOnly=false;
+        return result;
+    };
     // A first fact committed between SubscribeNoValue and SubscribeAccepted must
     // remain eligible for the first protected baseline once establishment finishes.
     S::StateRemoteReplicaTable<RuntimeState,0,1> emptyHandshake;
@@ -157,7 +188,14 @@ int main(){
         local,remoteRequester,S::StateSessionToken{41},{},0};
     std::array<std::uint8_t,S::MaximumCompleteStateSnapshotControlWireBytes<RuntimeState,Format>> bytes{};
     auto encoded=S::EncodeStateControl(subscribe,bytes.data(),bytes.size());assert(encoded);
-    auto admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteRequester});
+    for(unsigned attempt=1;attempt<=4;++attempt) {
+        AdmissionMutex::RejectAttempt=attempt;
+        const auto blocked=admit(bytes.data(),encoded.Bytes,{remoteRequester});
+        assert(blocked.Disposition==Primitive::PrimitiveAdmissionDisposition::TemporarilyUnavailable);
+        assert(adapter.Admissions==0);
+    }
+    AdmissionMutex::RejectAttempt=0;
+    auto admitted=admit(bytes.data(),encoded.Bytes,{remoteRequester});
     assert(admitted && adapter.Last.Kind==S::StateMessageKind::SubscribeSnapshot);
     assert(adapter.Last.Snapshot.Value.Value==10 && (adapter.Last.Version==S::StateVersion{false,1}));
     assert(runtime.GetSourceSubscriberStatus<RuntimeState>(remoteRequester.Device)==S::StateRemoteSessionState::Establishing);
@@ -167,14 +205,14 @@ int main(){
 
     // A retry of the same request must preserve the baseline identified by its
     // versionless SubscribeAccepted, even after the canonical truth advances.
-    admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteRequester});
+    admitted=admit(bytes.data(),encoded.Bytes,{remoteRequester});
     assert(admitted && adapter.Last.Kind==S::StateMessageKind::SubscribeSnapshot);
     assert(adapter.Last.Snapshot.Value.Value==10 && (adapter.Last.Version==S::StateVersion{false,1}));
 
     S::StateControlWireHeader subscribeAccepted{S::StateMessageKind::SubscribeAccepted,RuntimeState::TypeId,
         local,remoteRequester,S::StateSessionToken{41},{},0};
     encoded=S::EncodeStateControl(subscribeAccepted,bytes.data(),bytes.size());assert(encoded);
-    admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteRequester});
+    admitted=admit(bytes.data(),encoded.Bytes,{remoteRequester});
     assert(admitted);
     assert(runtime.GetSourceSubscriberStatus<RuntimeState>(remoteRequester.Device)==S::StateRemoteSessionState::ActiveTrusted);
     assert(runtime.SourceSubscriberDirty<RuntimeState>(remoteRequester.Device));
@@ -187,7 +225,7 @@ int main(){
     S::StateAcceptanceControlWireHeader publicationAccepted{{S::StateMessageKind::PublicationAccepted,
         RuntimeState::TypeId,local,remoteRequester,S::StateSessionToken{41},{},0},{false,2}};
     encoded=S::EncodeStateAcceptanceControl(publicationAccepted,bytes.data(),bytes.size());assert(encoded);
-    admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteRequester});assert(admitted);
+    admitted=admit(bytes.data(),encoded.Bytes,{remoteRequester});assert(admitted);
     assert((runtime.SourceAcceptedBaseline<RuntimeState>(remoteRequester.Device)==S::StateVersion{false,2}));
 
     // A failed adapter admission retains the current latest truth for a later service opportunity.
@@ -204,21 +242,21 @@ int main(){
     S::StateControlWireHeader sourceResync{S::StateMessageKind::ResyncRequest,RuntimeState::TypeId,
         local,remoteRequester,S::StateSessionToken{41},S::StateResyncToken{93},0};
     encoded=S::EncodeStateControl(sourceResync,bytes.data(),bytes.size());assert(encoded);
-    admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteRequester});assert(admitted);
+    admitted=admit(bytes.data(),encoded.Bytes,{remoteRequester});assert(admitted);
     assert(adapter.Last.Kind==S::StateMessageKind::ResyncSnapshot && adapter.Last.Snapshot.Value.Value==12);
     assert(owner.Set({13},{130,Timing::TimeReliability::Synchronized})==S::StateSetStatus::Changed);
-    admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteRequester});assert(admitted);
+    admitted=admit(bytes.data(),encoded.Bytes,{remoteRequester});assert(admitted);
     assert(adapter.Last.Snapshot.Value.Value==12 && (adapter.Last.Version==S::StateVersion{false,3}));
     S::StateAcceptanceControlWireHeader sourceResyncAccepted{{S::StateMessageKind::ResyncAccepted,
         RuntimeState::TypeId,local,remoteRequester,S::StateSessionToken{41},S::StateResyncToken{93},0},{false,3}};
     encoded=S::EncodeStateAcceptanceControl(sourceResyncAccepted,bytes.data(),bytes.size());assert(encoded);
-    admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteRequester});assert(admitted);
+    admitted=admit(bytes.data(),encoded.Bytes,{remoteRequester});assert(admitted);
     assert(runtime.SourceSubscriberDirty<RuntimeState>(remoteRequester.Device));
     assert(runtime.ServiceLatest<RuntimeState>());
     assert(adapter.Last.Kind==S::StateMessageKind::Publication && adapter.Last.Snapshot.Value.Value==13);
     sourceResync.Resync=S::StateResyncToken{92};
     encoded=S::EncodeStateControl(sourceResync,bytes.data(),bytes.size());assert(encoded);
-    admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteRequester});
+    admitted=admit(bytes.data(),encoded.Bytes,{remoteRequester});
     assert(admitted.Disposition==Primitive::PrimitiveAdmissionDisposition::Rejected);
 
     assert(runtime.RequireSourceResync<RuntimeState>(remoteRequester.Device)==S::StateRemoteStatus::Success);
@@ -237,14 +275,20 @@ int main(){
     S::StateControlWireHeader snapshotControl{S::StateMessageKind::SubscribeSnapshot,RuntimeState::TypeId,
         remoteOwner,local,session.Handle.Session,{},0};
     encoded=S::EncodeStateSnapshotControl<RuntimeState,Format>(snapshotControl,remoteInitial,{false,7},bytes.data(),bytes.size());assert(encoded);
-    admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteOwner});
+    // Replica commit survives contention when transferring its protected ACK.
+    AdmissionMutex::RejectAttempt=2;
+    admitted=admit(bytes.data(),encoded.Bytes,{remoteOwner});
+    assert(admitted.Disposition==Primitive::PrimitiveAdmissionDisposition::TemporarilyUnavailable);
+    assert(runtime.GetRemoteSessionStatus<RuntimeState>(remoteOwner.Device)==S::StateRemoteSessionState::ActiveTrusted);
+    AdmissionMutex::RejectAttempt=0;
+    admitted=admit(bytes.data(),encoded.Bytes,{remoteOwner});
     assert(admitted && adapter.Last.Kind==S::StateMessageKind::SubscribeAccepted);
     S::StateSnapshot<RuntimeState> read{};
     assert(runtime.TryReadRemote<RuntimeState>(remoteOwner.Device,read) && read.Value.Value==20);
     assert(runtime.GetRemoteSessionStatus<RuntimeState>(remoteOwner.Device)==S::StateRemoteSessionState::ActiveTrusted);
 
     // A lost acceptance can cause an exact snapshot retry; it is re-acknowledged without mutation.
-    admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteOwner});
+    admitted=admit(bytes.data(),encoded.Bytes,{remoteOwner});
     assert(admitted.Disposition==Primitive::PrimitiveAdmissionDisposition::AlreadyAccepted);
     assert(adapter.Last.Kind==S::StateMessageKind::SubscribeAccepted);
 
@@ -252,7 +296,7 @@ int main(){
     std::array<std::uint8_t,S::MaximumCompleteStatePublicationWireBytes<RuntimeState,Format>> publication{};
     encoded=S::EncodeStatePublication<RuntimeState,Format>(remoteNext,{false,8},remoteOwner,local,session.Handle.Session,
                                                            publication.data(),publication.size());assert(encoded);
-    admitted=runtime.AdmitRemote<RuntimeState,Format>(publication.data(),encoded.Bytes,{remoteOwner});
+    admitted=admit(publication.data(),encoded.Bytes,{remoteOwner});
     assert(admitted && adapter.Last.Kind==S::StateMessageKind::PublicationAccepted);
     assert(runtime.TryReadRemote<RuntimeState>(remoteOwner.Device,read) && read.Value.Value==21);
 
@@ -265,27 +309,32 @@ int main(){
     auto staleRequired=required;
     staleRequired.Session=S::StateSessionToken{session.Handle.Session.Value()+1};
     encoded=S::EncodeStateControl(staleRequired,bytes.data(),bytes.size());assert(encoded);
-    admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteOwner});
+    admitted=admit(bytes.data(),encoded.Bytes,{remoteOwner});
     assert(admitted.Disposition==Primitive::PrimitiveAdmissionDisposition::Rejected);
     staleRequired=required;
     staleRequired.Owner.Incarnation=System::RuntimeIncarnationId{1};
     encoded=S::EncodeStateControl(staleRequired,bytes.data(),bytes.size());assert(encoded);
-    admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{staleRequired.Owner});
+    admitted=admit(bytes.data(),encoded.Bytes,{staleRequired.Owner});
     assert(admitted.Disposition==Primitive::PrimitiveAdmissionDisposition::Rejected);
     assert(adapter.Admissions==admissionsBeforeStale);
     assert(runtime.GetRemoteSessionStatus<RuntimeState>(remoteOwner.Device)==S::StateRemoteSessionState::ActiveTrusted);
     assert(runtime.TryReadRemote<RuntimeState>(remoteOwner.Device,read) && read.Value.Value==21);
     encoded=S::EncodeStateControl(required,bytes.data(),bytes.size());assert(encoded);
-    admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteOwner});assert(admitted);
+    AdmissionMutex::RejectAttempt=2; // Table acquired; shared token authority busy.
+    admitted=admit(bytes.data(),encoded.Bytes,{remoteOwner});
+    assert(admitted.Disposition==Primitive::PrimitiveAdmissionDisposition::TemporarilyUnavailable);
+    assert(runtime.GetRemoteSessionStatus<RuntimeState>(remoteOwner.Device)==S::StateRemoteSessionState::ActiveTrusted);
+    AdmissionMutex::RejectAttempt=0;
+    admitted=admit(bytes.data(),encoded.Bytes,{remoteOwner});assert(admitted);
     assert(adapter.Last.Kind==S::StateMessageKind::ResyncRequest && adapter.Last.Resync);
     const auto resync=adapter.Last.Resync;
     const S::StateSnapshot<RuntimeState> resynced{{30},{300,Timing::TimeReliability::Synchronized}};
     S::StateControlWireHeader resyncControl{S::StateMessageKind::ResyncSnapshot,RuntimeState::TypeId,
         remoteOwner,local,session.Handle.Session,resync,0};
     encoded=S::EncodeStateSnapshotControl<RuntimeState,Format>(resyncControl,resynced,{false,30},bytes.data(),bytes.size());assert(encoded);
-    admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteOwner});assert(admitted);
+    admitted=admit(bytes.data(),encoded.Bytes,{remoteOwner});assert(admitted);
     assert(adapter.Last.Kind==S::StateMessageKind::ResyncAccepted && adapter.Last.Resync==resync);
-    admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteOwner});
+    admitted=admit(bytes.data(),encoded.Bytes,{remoteOwner});
     assert(admitted.Disposition==Primitive::PrimitiveAdmissionDisposition::AlreadyAccepted);
     assert(adapter.Last.Kind==S::StateMessageKind::ResyncAccepted);
     assert(runtime.TryReadRemote<RuntimeState>(remoteOwner.Device,read) && read.Value.Value==30);
@@ -293,11 +342,26 @@ int main(){
     assert(runtime.Unsubscribe<RuntimeState>(session.Handle,S::StateReplicaRelease::RetainLastKnown)==S::StateRemoteStatus::Success);
     const auto admissionsAfterClose=adapter.Admissions;
     encoded=S::EncodeStateControl(required,bytes.data(),bytes.size());assert(encoded);
-    admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteOwner});
+    admitted=admit(bytes.data(),encoded.Bytes,{remoteOwner});
     assert(admitted.Disposition==Primitive::PrimitiveAdmissionDisposition::Rejected);
     assert(adapter.Admissions==admissionsAfterClose);
     assert(runtime.GetRemoteSessionStatus<RuntimeState>(remoteOwner.Device)==S::StateRemoteSessionState::Inactive);
     assert(runtime.TryReadRemote<RuntimeState>(remoteOwner.Device,read) && read.Value.Value==30);
+
+    // Selector mutation also refuses contention without consuming the rejection.
+    const auto rejectedOwner=Identity(4,4);
+    const auto rejectedSession=runtime.SubscribeFrom<RuntimeState>(rejectedOwner.Device);assert(rejectedSession);
+    S::StateControlWireHeader rejected{S::StateMessageKind::SubscribeRejected,RuntimeState::TypeId,
+        rejectedOwner,local,rejectedSession.Handle.Session,{},1};
+    encoded=S::EncodeStateControl(rejected,bytes.data(),bytes.size());assert(encoded);
+    for(unsigned attempt=1;attempt<=2;++attempt) {
+        AdmissionMutex::RejectAttempt=attempt;
+        admitted=admit(bytes.data(),encoded.Bytes,{rejectedOwner});
+        assert(admitted.Disposition==Primitive::PrimitiveAdmissionDisposition::TemporarilyUnavailable);
+    }
+    AdmissionMutex::RejectAttempt=0;
+    admitted=admit(bytes.data(),encoded.Bytes,{rejectedOwner});assert(admitted);
+    assert(runtime.GetRemoteSessionStatus<RuntimeState>(rejectedOwner.Device)==S::StateRemoteSessionState::Inactive);
 
     assert(runtime.Shutdown()==S::StateRuntimeStatus::Success);
 }

@@ -214,3 +214,34 @@ and equal-value no-op cover the runtime boundary. The second-wrap regression fai
 Fourteen active host executables passed after the core changes; the expanded remote_sessions
 runtime wrap assertions are rebuilt separately before publication. This does not certify the
 remaining nonblocking/lifetime, wake/campaign, remote-observer/tooling or final State gates.
+
+
+## 2026-09-12T13:40:13.168705+00:00 — Nonblocking family admission lock path
+
+Parent c0dc8fdae4b6eed00b46fb1cbeb39c23c79e8a30, tree
+9fe3a8ef347c0daf119ad354979d44c52696e828. CI 34696752222 host-contracts and
+esp32-typed-surface both SUCCESS. Primitive handoff is now
+7b90e0db8c3a1e86d2284a20af2558d876bdce62 (Revision 107).
+
+This change routes every framework mutex on Runtime::AdmitRemote through one try-lock attempt.
+Table and selector synchronization is resolved during Initialize alongside the existing token
+and Type runtime storage. Busy maps to TemporarilyUnavailable, separately from NoValue and
+TokenExhausted. Nonblocking canonical capture and frozen outbound binding acquisition preserve
+the established local-commit-before-reply retry semantics. Local helper paths retain blocking
+access where allowed. Adapter Admit is explicitly required to perform bounded nonblocking
+ownership transfer without application callbacks or waiting for capacity.
+
+The remote_runtime fixture installs an instrumented synchronization provider that fails any
+blocking lock or lazy mutex creation during admission. It failed on the predecessor. The new
+path passes all exercised handshake/publication/resync controls. Injected contention at all four
+source-subscribe lock points, post-replica-commit ACK transfer, process token allocation, and
+both selector-rejection locks returns retryable status and preserves the appropriate state.
+All 14 active host executables were rebuilt and passed with C++17 warnings-as-errors and no RTTI.
+This proves the framework lock path under its bounded storage/adapter contracts, not arbitrary
+user adapter behavior, hardware latency or full shutdown/lifetime safety.
+
+Next: close admission and service activity before shutdown, drain admitted users, detach borrowed
+convergence lifetime safely; then frozen wake/continuity callbacks, finite campaign accounting,
+remote observer/tooling and final State eradication/resource/docs gates. Plain Runtime running
+state and shutdown concurrency are still open in this checkpoint. The user's living-handoff
+requirement remains active; save exact current published and uncommitted state before any exit.

@@ -34,7 +34,9 @@ struct StateTransportContract final {
 
 /// <summary>One semantic State-family message offered synchronously to an adapter binding.</summary>
 /// <remarks>The adapter must retain/copy every field it needs before returning Accepted. The message
-/// contains no physical route, link peer, packet identifier, retry object or adapter-owned byte storage.</remarks>
+/// contains no physical route, link peer, packet identifier, retry object or adapter-owned byte storage.
+/// Admit is a bounded nonblocking ownership attempt: it must not wait for capacity or invoke
+/// application callbacks. Retry scheduling belongs to the adapter service context.</remarks>
 template<class TState>
 struct StateOutboundMessage final {
     StateMessageKind Kind=StateMessageKind::Publication;

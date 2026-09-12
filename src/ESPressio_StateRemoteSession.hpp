@@ -32,7 +32,8 @@ enum class StateRemoteStatus : std::uint8_t {
     ResyncRequired,
     TokenExhausted,
     TransportUnavailable,
-    Conflict
+    Conflict,
+    Busy
 };
 
 enum class StateReplicaRelease : std::uint8_t { RetainLastKnown, ReleaseReplica };
@@ -65,6 +66,16 @@ public:
 };
 
 namespace Detail {
+/// <summary>Blocking local access or one nonblocking family-ingress lock attempt.</summary>
+template<bool NonBlocking>
+class StateAdmissionLock final : public std::unique_lock<System::Synchronization::Mutex> {
+public:
+    explicit StateAdmissionLock(System::Synchronization::Mutex& mutex) noexcept
+        : std::unique_lock<System::Synchronization::Mutex>(mutex,std::defer_lock) {
+        if constexpr(NonBlocking) (void)this->try_lock();
+        else this->lock();
+    }
+};
 /// <summary>One non-resettable token authority shared by every State Runtime in this process.</summary>
 /// <remarks>System identity cannot change in a process. Destroying/reconstructing a family Runtime,
 /// or configuring disjoint Type packs, therefore must not restart either token namespace. The
@@ -79,6 +90,11 @@ public:
     static bool TryAllocate(StateSessionToken& output) noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         return _sessions.TryAllocate(output);
+    }
+    static StateRemoteStatus TryAllocateResyncNonBlocking(StateResyncToken& output) noexcept {
+        std::unique_lock<System::Synchronization::Mutex> lock(_mutex,std::try_to_lock);
+        if(!lock) return StateRemoteStatus::Busy;
+        return _resyncs.TryAllocate(output)?StateRemoteStatus::Success:StateRemoteStatus::TokenExhausted;
     }
     static bool TryAllocate(StateResyncToken& output) noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);

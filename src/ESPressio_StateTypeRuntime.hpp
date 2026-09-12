@@ -18,6 +18,7 @@
 
 namespace ESPressio::State {
 namespace Detail {
+enum class StateCaptureStatus : std::uint8_t { Success, NoValue, Busy };
 template<class T> constexpr bool ValidateLocalStateType() noexcept {
     static_assert(std::is_same_v<std::remove_cv_t<decltype(T::TypeId)>,StateTypeId>,"State TypeId must be strong StateTypeId");
     static_assert(bool(T::TypeId),"State TypeId must be nonzero");
@@ -249,10 +250,21 @@ public:
         version=_version;
         return true;
     }
+    Detail::StateCaptureStatus TryCaptureVersioned(StateSnapshot<TState>& output,StateVersion& version) const noexcept {
+        std::unique_lock<System::Synchronization::Mutex> lock(_mutex,std::try_to_lock);
+        if(!lock) return Detail::StateCaptureStatus::Busy;
+        if(!_hasValue) { version={};return Detail::StateCaptureStatus::NoValue; }
+        _storage.CopyOut(output.Value);
+        output.TruthTime=_truthTime;
+        version=_version;
+        return Detail::StateCaptureStatus::Success;
+    }
+    template<bool NonBlocking=false>
     StateTransportAdmission AdmitOutbound(const StateOutboundMessage<TState>& message) noexcept {
         Detail::StateTransportBindingView<TState> binding{};
         {
-            std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+            Detail::StateAdmissionLock<NonBlocking> lock(_mutex);
+            if(!lock) return {StateTransportAdmissionStatus::CapacityUnavailable};
             if(_phase.load(std::memory_order_relaxed)!=Phase::Running || !_transport)
                 return {StateTransportAdmissionStatus::Quiesced};
             binding=_transport;
