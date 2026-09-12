@@ -21,6 +21,7 @@ struct Convergence final {
 };
 struct WireValue final {
     int Value=0;
+    constexpr bool operator==(const WireValue& other) const noexcept { return Value==other.Value; }
     ESPRESSIO_SERIALIZABLE_TYPE(WireValue)
     ESPRESSIO_SERIALIZABLE_SCHEMA_VERSION(1)
     ESPRESSIO_SERIALIZABLE_PROPERTIES(ESPRESSIO_PROPERTY("value",Value))
@@ -127,7 +128,7 @@ int main(){
     assert(completeEncoded && completeEncoded.Bytes<=complete.size());
     S::StatePublicationWireHeader completeHeader{};assert(S::DecodeStatePublicationHeader(complete.data(),completeEncoded.Bytes,completeHeader));
     WireValue decodedValue{};
-    assert(S::DecodeStatePublicationValue<WireState,Serializable::DirectBinary>(completeHeader,complete.data()+S::StatePublicationWireHeaderSize,completeHeader.PayloadLength,decodedValue));
+    assert((S::DecodeStatePublicationValue<WireState,Serializable::DirectBinary>(completeHeader,complete.data()+S::StatePublicationWireHeaderSize,completeHeader.PayloadLength,decodedValue)));
     assert(decodedValue.Value==1234);
 
     std::array<std::uint8_t,S::MaximumCompleteStateSnapshotControlWireBytes<WireState,Serializable::DirectBinary>> completeSnapshot{};
@@ -135,6 +136,6 @@ int main(){
     auto baselineEncoded=S::EncodeStateSnapshotControl<WireState,Serializable::DirectBinary>(baseline,source,{false,1},completeSnapshot.data(),completeSnapshot.size());
     assert(baselineEncoded);
     S::StateSnapshotControlWireHeader baselineHeader{};assert(S::DecodeStateSnapshotControlHeader(completeSnapshot.data(),baselineEncoded.Bytes,baselineHeader));
-    WireValue baselineValue{};assert(S::DecodeStateSnapshotControlValue<WireState,Serializable::DirectBinary>(baselineHeader,completeSnapshot.data()+S::StateSnapshotControlWireHeaderSize,baselineHeader.PayloadLength,baselineValue));
+    WireValue baselineValue{};assert((S::DecodeStateSnapshotControlValue<WireState,Serializable::DirectBinary>(baselineHeader,completeSnapshot.data()+S::StateSnapshotControlWireHeaderSize,baselineHeader.PayloadLength,baselineValue)));
     assert(baselineValue.Value==1234);
 }
