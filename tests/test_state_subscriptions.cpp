@@ -75,7 +75,7 @@ int main(){
 
     Adapter<SpecificState> specificAdapter;
     S::StateTransportBinding<SpecificState,Serializable::DirectBinary> specificBinding;
-    assert((specificBinding.Initialize<Adapter<SpecificState>,&Adapter<SpecificState>::Admit,&Adapter<SpecificState>::Validate>(specificAdapter)));
+    assert((specificBinding.InitializeWithDiscovery<Adapter<SpecificState>,&Adapter<SpecificState>::Admit,&Adapter<SpecificState>::Validate,&Adapter<SpecificState>::Discover>(specificAdapter)));
 
     Adapter<AnyState> anyAdapter;
     anyAdapter.Discovered={Identity(0x31,31).Device,Identity(0x32,32).Device,Identity(0x33,33).Device};
