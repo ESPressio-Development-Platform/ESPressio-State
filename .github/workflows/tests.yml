@@ -13,6 +13,10 @@ jobs:
       - uses: actions/checkout@v4
         with: {repository: ESPressio-Development-Platform/ESPressio-Primitive, ref: primitives_redesign, path: deps/ESPressio-Primitive}
       - uses: actions/checkout@v4
+        with: {repository: ESPressio-Development-Platform/ESPressio-Task, ref: primitives_redesign, path: deps/ESPressio-Task}
+      - uses: actions/checkout@v4
+        with: {repository: ESPressio-Development-Platform/ESPressio-Threads, ref: primitives_redesign, path: deps/ESPressio-Threads}
+      - uses: actions/checkout@v4
         with: {repository: ESPressio-Development-Platform/ESPressio-Units, ref: primitives_redesign, path: deps/ESPressio-Units}
       - uses: actions/checkout@v4
         with: {repository: ESPressio-Development-Platform/ESPressio-Observable, ref: primitives_redesign, path: deps/ESPressio-Observable}
@@ -43,6 +47,8 @@ jobs:
               file://${{ github.workspace }}
               https://github.com/ESPressio-Development-Platform/ESPressio-System.git#primitives_redesign
               https://github.com/ESPressio-Development-Platform/ESPressio-Primitive.git#primitives_redesign
+              https://github.com/ESPressio-Development-Platform/ESPressio-Task.git#primitives_redesign
+              https://github.com/ESPressio-Development-Platform/ESPressio-Threads.git#primitives_redesign
               https://github.com/ESPressio-Development-Platform/ESPressio-Units.git#primitives_redesign
               https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#primitives_redesign
               https://github.com/ESPressio-Development-Platform/ESPressio-Timing.git#primitives_redesign
@@ -58,8 +64,10 @@ jobs:
               static constexpr const char* CanonicalName="Demo.State.Led";
           };
           using States=ESPressio::State::Runtime<ESPressio::State::TypeConfiguration<LedState>>;
+          using Observer=ESPressio::State::ObserverCapability<LedState>;
           ESPressio::Primitive::TypeDirectory<1> directory;
           States states;
+          Observer observer;
           void setup(){ (void)directory.Register<LedState>();(void)directory.Initialize(); }
           void loop(){}
           CPP

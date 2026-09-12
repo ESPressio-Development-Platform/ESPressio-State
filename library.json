@@ -36,6 +36,11 @@
             "platforms": "*"
         },
         {
+            "name": "ESPressio-Threads",
+            "version": "https://github.com/ESPressio-Development-Platform/ESPressio-Threads.git#primitives_redesign",
+            "platforms": "*"
+        },
+        {
             "name": "ESPressio-Observable",
             "version": "https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#primitives_redesign",
             "platforms": "*"

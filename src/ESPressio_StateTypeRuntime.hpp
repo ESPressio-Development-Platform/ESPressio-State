@@ -8,6 +8,7 @@
 #include <ESPressio_Synchronization.hpp>
 #include "ESPressio_StateCanonicalStorage.hpp"
 #include "ESPressio_StateComparison.hpp"
+#include "ESPressio_StateObserverTarget.hpp"
 #include "ESPressio_StateOwner.hpp"
 #include "ESPressio_StateSnapshot.hpp"
 #include "ESPressio_StateVersion.hpp"
@@ -38,6 +39,7 @@ class StateTypeRuntime final {
     bool _ownerEverBound=false;
     bool _ownerAlive=false;
     std::uint64_t _ownerToken=0;
+    StateObserverTargetNode* _observerTargets=nullptr;
     std::atomic<Phase> _phase{Phase::Uninitialized};
     Timing::QualifiedTime (*_captureTime)()=nullptr;
 
@@ -46,6 +48,11 @@ class StateTypeRuntime final {
     void ReleaseOwner(std::uint64_t token) noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         if(token && token==_ownerToken) _ownerAlive=false;
+    }
+    void PublishObserversLocked() noexcept {
+        for(auto* target=_observerTargets;target;target=target->Next)
+            if(target->Linked.load(std::memory_order_acquire) && target->Publish)
+                target->Publish(target->Owner,target->ObservationIndex);
     }
     StateSetStatus Set(std::uint64_t token,const Value& candidate,Timing::QualifiedTime truthTime) {
         if(_phase.load(std::memory_order_acquire)!=Phase::Running) return StateSetStatus::NotRunning;
@@ -57,6 +64,7 @@ class StateTypeRuntime final {
         if(_hasValue){
             Value current{};
             _storage.CopyOut(current);
+            // Equal State is a strict semantic no-op. Supplied TruthTime cannot refresh it.
             if(StateComparison<TState>::Equals(current,prepared)) return StateSetStatus::NoChange;
         }
         const auto next=NextStateVersion(_version,_hasValue);
@@ -64,6 +72,9 @@ class StateTypeRuntime final {
         _truthTime=truthTime;
         _version=next;
         _hasValue=true;
+        // TH10 publication is metadata-only: target thunks set one pending bit and common Wake.
+        // No observer may read State or invoke application code from this producer path.
+        PublishObserversLocked();
         return StateSetStatus::Changed;
     }
     friend class StateOwner<TState>;
@@ -72,6 +83,7 @@ public:
     StateTypeRuntime(const StateTypeRuntime&)=delete;
     StateTypeRuntime& operator=(const StateTypeRuntime&)=delete;
     static StateTypeRuntime& Get() noexcept { static StateTypeRuntime instance;return instance; }
+
     StateOwner<TState> BindOwner() noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         if(_phase.load(std::memory_order_relaxed)!=Phase::Uninitialized || _ownerEverBound) return {};
@@ -79,10 +91,48 @@ public:
         _ownerToken=1;
         return StateOwner<TState>(this,_ownerToken);
     }
+
+    /// <summary>Stages one fixed observer endpoint before the Type topology freezes.</summary>
+    StateRuntimeStatus StageObserverTarget(StateObserverTargetNode& target) noexcept {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        const auto phase=_phase.load(std::memory_order_relaxed);
+        if(phase==Phase::Running || phase==Phase::Stopping || phase==Phase::Stopped) return StateRuntimeStatus::Frozen;
+        if(!target || target.Linked.load(std::memory_order_relaxed)) return StateRuntimeStatus::InvalidConfiguration;
+        target.Next=_observerTargets;
+        target.Linked.store(true,std::memory_order_release);
+        _observerTargets=&target;
+        return StateRuntimeStatus::Success;
+    }
+    void RemoveObserverTarget(StateObserverTargetNode& target) noexcept {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        auto** current=&_observerTargets;
+        while(*current){
+            if(*current==&target){
+                *current=target.Next;
+                target.Next=nullptr;
+                target.Linked.store(false,std::memory_order_release);
+                return;
+            }
+            current=&((*current)->Next);
+        }
+        target.Linked.store(false,std::memory_order_release);
+        target.Next=nullptr;
+    }
+    bool ValidateStart() const noexcept {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        for(auto* target=_observerTargets;target;target=target->Next)
+            if(!target->Linked.load(std::memory_order_relaxed) || !target->Validate || !target->Validate(target->Owner))
+                return false;
+        return true;
+    }
+
     StateRuntimeStatus Initialize(Timing::QualifiedTime(*captureTime)()=nullptr) noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         if(_phase.load(std::memory_order_relaxed)!=Phase::Uninitialized) return StateRuntimeStatus::AlreadyInitialized;
-        if(!System::RuntimeIdentity::IsInstalled()) return StateRuntimeStatus::IdentityUnavailable;
+        // P4 identity is required only by a Transmissible State. Purely local/Serializable
+        // State remains available when distributed identity bootstrap is unavailable.
+        if constexpr(TState::IsTransmissibleState)
+            if(!System::RuntimeIdentity::IsInstalled()) return StateRuntimeStatus::IdentityUnavailable;
         _captureTime=captureTime?captureTime:&CaptureSystemTime;
         _phase.store(Phase::Prepared,std::memory_order_release);
         return StateRuntimeStatus::Success;

@@ -1,5 +1,4 @@
 #pragma once
-#include <atomic>
 #include <type_traits>
 #include <ESPressio_TypeDirectory.hpp>
 #include "ESPressio_StateDescriptor.hpp"
@@ -31,6 +30,7 @@ class Runtime final {
         return StateTypeRuntime<T>::Get().Initialize(capture);
     }
     template<class C> static void RollbackOne() noexcept { (void)StateTypeRuntime<typename C::StateType>::Get().RollbackInitialization(); }
+    template<class C> static bool ValidateOne() noexcept { return StateTypeRuntime<typename C::StateType>::Get().ValidateStart(); }
 public:
     Runtime() noexcept=default;
     Runtime(const Runtime&)=delete;Runtime& operator=(const Runtime&)=delete;
@@ -57,6 +57,7 @@ public:
     StateRuntimeStatus Start() noexcept {
         if(!_initialized) return StateRuntimeStatus::NotInitialized;
         if(_running) return StateRuntimeStatus::Frozen;
+        if(!(ValidateOne<TConfigurations>() && ...)) return StateRuntimeStatus::InvalidConfiguration;
         (StateTypeRuntime<typename TConfigurations::StateType>::Get().StartValidated(),...);
         _running=true;return StateRuntimeStatus::Success;
     }
