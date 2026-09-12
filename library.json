@@ -41,8 +41,18 @@
             "platforms": "*"
         },
         {
-            "name": "ESPressio-Observable",
-            "version": "https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#primitives_redesign",
+            "name": "ESPressio-Timing",
+            "version": "https://github.com/ESPressio-Development-Platform/ESPressio-Timing.git#primitives_redesign",
+            "platforms": "*"
+        },
+        {
+            "name": "ESPressio-Serializable",
+            "version": "https://github.com/ESPressio-Development-Platform/ESPressio-Serializable.git#primitives_redesign",
+            "platforms": "*"
+        },
+        {
+            "name": "ESPressio-Persistence",
+            "version": "https://github.com/ESPressio-Development-Platform/ESPressio-Persistence.git#primitives_redesign",
             "platforms": "*"
         }
     ]
