@@ -4,6 +4,7 @@
 #include <type_traits>
 #include <ESPressio_PrimitivePolicy.hpp>
 #include "ESPressio_StateRemoteAdmission.hpp"
+#include "ESPressio_StateRemoteSession.hpp"
 #include "ESPressio_StateWireV1.hpp"
 
 namespace ESPressio::State {
