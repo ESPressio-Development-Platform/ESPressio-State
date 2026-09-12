@@ -172,3 +172,23 @@ older session/token rejection, and deterministic read/commit/completion interlea
 State remains incomplete: nonblocking transactional admission, wake/continuity integration,
 finite pursuit scheduling/exhaustion, remote observation/tooling, legacy/docs/resource/final
 closure are still required before Adapters. Existing implementation authorization remains active.
+
+
+## 2026-09-12T13:27:02.214627+00:00 — First baseline retention and source resync opportunities
+
+Parent: 53aeed239c129ab372eda88ffa88efa86049aa54, CI 34696024641 host-contracts and esp32-typed-surface SUCCESS.
+This change reuses the fixed subscriber ControlSnapshot for the first baseline after NoValue;
+new truth cannot replace it before acceptance, and remains dirty for publication after acceptance.
+The regression failed on the predecessor algorithm and passes with the repair.
+ResyncRequired now has a bounded pending source control opportunity offered by ServiceLatest;
+rejection retains it, successful admission transfers it once, and newer truth rearms it.
+An older completion cannot clear a newer pending opportunity. Runtime tests verify identity,
+session and absence of snapshot payload on that control. Fourteen active host executables
+were rebuilt and passed; remote_runtime was rebuilt and passed again after the final runtime
+control assertions. Full campaign retry/exhaustion and wake integration are still incomplete.
+
+The user requires a continuously updated transferable living handoff even on usage-limit exit.
+Canonical handoff Revision 106 records the completed document/current-state audit, published
+heads, provider gaps and working changes. Continue authorized work without checkpoint stops.
+Next: pending-handshake continuity invalidation, nonblocking ingress/lifetime, wake/campaigns,
+remote observation/tooling, legacy eradication, docs/resources and State final closure.

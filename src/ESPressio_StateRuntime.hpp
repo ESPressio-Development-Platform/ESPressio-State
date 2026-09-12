@@ -554,12 +554,12 @@ public:
         if(!StateTypeRuntime<TState>::Get().TryReadVersioned(snapshot,version))
             return {StateTransportAdmissionStatus::CapacityUnavailable};
         StateSourceWork work{};
-        if(!Table<TState>().TryPrepareLatest(version,work))
+        if(!Table<TState>().TryPrepareLatest(version,snapshot,work))
             return {StateTransportAdmissionStatus::CapacityUnavailable};
         StateOutboundMessage<TState> message{};
         message.Kind=work.Kind;message.Owner=owner;message.Requester=work.Requester;
         message.Session=work.Session;message.Version=work.Version;
-        message.Snapshot=snapshot;message.HasSnapshot=true;
+        message.Snapshot=snapshot;message.HasSnapshot=work.Kind!=StateMessageKind::ResyncRequired;
         const auto admitted=StateTypeRuntime<TState>::Get().AdmitOutbound(message);
         Table<TState>().CompleteLatestTransfer(work,bool(admitted));
         return admitted;

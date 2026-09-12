@@ -53,6 +53,8 @@ struct StateSourceSubscriberSlot final {
     // Establishment acceptance carries no compact version. Its baseline must
     // therefore remain immutable across retries until that acceptance arrives.
     bool HasEstablishmentReply=false;
+    bool HasPendingFirstBaseline=false;
+    bool ResyncRequiredPending=false;
     StateSnapshot<TState> ControlSnapshot{};
     StateResyncToken ResyncHighWater{};
 };
@@ -452,6 +454,7 @@ public:
         for(auto& slot:_subscribers) {
             if(!slot.Occupied) continue;
             slot.LatestVersion=current;
+            if(slot.SessionState==StateRemoteSessionState::ResyncRequired) slot.ResyncRequiredPending=true;
             if(slot.SessionState!=StateRemoteSessionState::ActiveTrusted &&
                slot.SessionState!=StateRemoteSessionState::ActiveNoBaseline) continue;
             bool mustResync=false;
@@ -465,6 +468,7 @@ public:
             }
             if(mustResync) {
                 slot.SessionState=StateRemoteSessionState::ResyncRequired;
+                slot.ResyncRequiredPending=true;
                 slot.Dirty=false;
                 slot.Resync={};
             } else {
@@ -506,22 +510,38 @@ public:
         if(!slot->HasOfferedBaseline || slot->OfferedBaseline!=version) return StateRemoteStatus::SessionMismatch;
         slot->AcceptedBaseline=version;
         slot->HasAcceptedBaseline=true;
+        slot->HasPendingFirstBaseline=false;
         slot->Dirty=bool(slot->LatestVersion) && slot->LatestVersion!=version;
         slot->SessionState=StateRemoteSessionState::ActiveTrusted;
         return StateRemoteStatus::Success;
     }
-    bool TryPrepareLatest(StateVersion current,StateSourceWork& output) noexcept {
+    bool TryPrepareLatest(StateVersion current,StateSnapshot<TState>& snapshot,StateSourceWork& output) noexcept {
         if(!current) return false;
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         for(auto& slot:_subscribers) {
-            if(!slot.Occupied || !slot.Dirty) continue;
+            if(!slot.Occupied) continue;
+            if(slot.SessionState==StateRemoteSessionState::ResyncRequired && slot.ResyncRequiredPending) {
+                output={slot.Requester,slot.Session,StateMessageKind::ResyncRequired,slot.LatestVersion};
+                return true;
+            }
+            if(!slot.Dirty) continue;
             // The canonical capture precedes this lock. A Set may already have
             // committed a newer version; never overwrite that marker with the
             // stale capture or let its completion clear the newer dirty truth.
+            if(slot.SessionState==StateRemoteSessionState::ActiveNoBaseline && slot.HasPendingFirstBaseline) {
+                StateStorageTraits<Value>::CopyOut(slot.ControlSnapshot.Value,snapshot.Value);
+                snapshot.TruthTime=slot.ControlSnapshot.TruthTime;
+                output={slot.Requester,slot.Session,StateMessageKind::BaselineSnapshot,slot.OfferedBaseline};
+                return true;
+            }
             if(slot.LatestVersion && slot.LatestVersion!=current) continue;
             StateMessageKind kind{};
-            if(slot.SessionState==StateRemoteSessionState::ActiveNoBaseline) kind=StateMessageKind::BaselineSnapshot;
-            else if(slot.SessionState==StateRemoteSessionState::ActiveTrusted) kind=StateMessageKind::Publication;
+            if(slot.SessionState==StateRemoteSessionState::ActiveNoBaseline) {
+                kind=StateMessageKind::BaselineSnapshot;
+                StateStorageTraits<Value>::CopyOut(snapshot.Value,slot.ControlSnapshot.Value);
+                slot.ControlSnapshot.TruthTime=snapshot.TruthTime;
+                slot.HasPendingFirstBaseline=true;
+            } else if(slot.SessionState==StateRemoteSessionState::ActiveTrusted) kind=StateMessageKind::Publication;
             else continue;
             slot.OfferedBaseline=current;
             slot.HasOfferedBaseline=true;
@@ -534,8 +554,13 @@ public:
     void CompleteLatestTransfer(const StateSourceWork& work,bool accepted) noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         auto* slot=FindSubscriberLocked(work.Requester.Device);
-        if(!slot || slot->Requester!=work.Requester || slot->Session!=work.Session ||
-           !slot->HasOfferedBaseline || slot->OfferedBaseline!=work.Version) return;
+        if(!slot || slot->Requester!=work.Requester || slot->Session!=work.Session) return;
+        if(work.Kind==StateMessageKind::ResyncRequired) {
+            if(accepted && slot->SessionState==StateRemoteSessionState::ResyncRequired &&
+               slot->LatestVersion==work.Version) slot->ResyncRequiredPending=false;
+            return;
+        }
+        if(!slot->HasOfferedBaseline || slot->OfferedBaseline!=work.Version) return;
         if(accepted && slot->LatestVersion==work.Version) slot->Dirty=false;
     }
     StateRemoteStatus RemoveSubscriber(const System::DeviceRuntimeIdentity& requester,StateSessionToken session) noexcept {
@@ -551,6 +576,7 @@ public:
         auto* slot=FindSubscriberLocked(requester);
         if(!slot) return StateRemoteStatus::NotFound;
         slot->SessionState=StateRemoteSessionState::ResyncRequired;
+        slot->ResyncRequiredPending=true;
         slot->Dirty=false;
         slot->Resync={};
         return StateRemoteStatus::Success;

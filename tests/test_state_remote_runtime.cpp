@@ -75,8 +75,9 @@ int main(){
     emptyHandshake.MarkLatestDirty({false,1});
     assert(emptyHandshake.AcceptSubscriberEstablishment(remoteRequester,S::StateSessionToken{90},{false,1})==S::StateRemoteStatus::Success);
     assert(emptyHandshake.SubscriberDirty(remoteRequester.Device));
+    S::StateSnapshot<RuntimeState> firstSnapshot{{1},{1,Timing::TimeReliability::Synchronized}};
     S::StateSourceWork firstBaseline{};
-    assert(emptyHandshake.TryPrepareLatest({false,1},firstBaseline));
+    assert(emptyHandshake.TryPrepareLatest({false,1},firstSnapshot,firstBaseline));
     assert(firstBaseline.Kind==S::StateMessageKind::BaselineSnapshot);
     assert(emptyHandshake.BeginSubscriberResync(remoteRequester,S::StateSessionToken{90},S::StateResyncToken{12},{false,1})==S::StateRemoteStatus::Success);
     // An ordinary ACK has no resync token and cannot complete even the same-version resync.
@@ -98,9 +99,9 @@ int main(){
     assert(racingHandshake.AcceptSubscriberEstablishment(remoteRequester,S::StateSessionToken{91},{false,1})==S::StateRemoteStatus::Success);
     assert(racingHandshake.SubscriberDirty(remoteRequester.Device));
     S::StateSourceWork racingWork{};
-    assert(!racingHandshake.TryPrepareLatest({false,1},racingWork));
+    assert(!racingHandshake.TryPrepareLatest({false,1},handshakeSnapshot,racingWork));
     assert(racingHandshake.SubscriberDirty(remoteRequester.Device));
-    assert(racingHandshake.TryPrepareLatest({false,2},racingWork));
+    assert(racingHandshake.TryPrepareLatest({false,2},handshakeSnapshot,racingWork));
     racingHandshake.MarkLatestDirty({false,3});
     racingHandshake.CompleteLatestTransfer(racingWork,true);
     assert(racingHandshake.SubscriberDirty(remoteRequester.Device));
@@ -115,6 +116,39 @@ int main(){
     assert(!handshakeHasValue && !handshakeVersion);
     assert(racingHandshake.AcceptSubscriberEstablishment(remoteRequester,S::StateSessionToken{92},{})==S::StateRemoteStatus::Success);
     assert(racingHandshake.SubscriberDirty(remoteRequester.Device));
+
+    // The first baseline following NoValue remains immutable until its ACK.
+    handshakeSnapshot={{4},{4,Timing::TimeReliability::Synchronized}};
+    assert(racingHandshake.TryPrepareLatest({false,4},handshakeSnapshot,racingWork));
+    assert(racingWork.Kind==S::StateMessageKind::BaselineSnapshot);
+    racingHandshake.CompleteLatestTransfer(racingWork,true);
+    racingHandshake.MarkLatestDirty({false,5});
+    handshakeSnapshot={{5},{5,Timing::TimeReliability::Synchronized}};
+    assert(racingHandshake.TryPrepareLatest({false,5},handshakeSnapshot,racingWork));
+    assert((racingWork.Version==S::StateVersion{false,4}));
+    assert(handshakeSnapshot.Value.Value==4 && handshakeSnapshot.TruthTime.Nanoseconds==4);
+    assert(racingHandshake.AcceptSubscriberBaseline(remoteRequester,S::StateSessionToken{92},{false,4})==S::StateRemoteStatus::Success);
+    assert(racingHandshake.SubscriberDirty(remoteRequester.Device));
+    handshakeSnapshot={{5},{5,Timing::TimeReliability::Synchronized}};
+    assert(racingHandshake.TryPrepareLatest({false,5},handshakeSnapshot,racingWork));
+    assert(racingWork.Kind==S::StateMessageKind::Publication);
+    assert((racingWork.Version==S::StateVersion{false,5}) && handshakeSnapshot.Value.Value==5);
+
+    // Loss of continuity creates a protected control opportunity. Admission
+    // rejection retains it; admission transfers it once, and new truth rearms it.
+    assert(racingHandshake.RequireSubscriberResync(remoteRequester.Device)==S::StateRemoteStatus::Success);
+    assert(racingHandshake.TryPrepareLatest({false,5},handshakeSnapshot,racingWork));
+    assert(racingWork.Kind==S::StateMessageKind::ResyncRequired);
+    racingHandshake.CompleteLatestTransfer(racingWork,false);
+    assert(racingHandshake.TryPrepareLatest({false,5},handshakeSnapshot,racingWork));
+    racingHandshake.CompleteLatestTransfer(racingWork,true);
+    assert(!racingHandshake.TryPrepareLatest({false,5},handshakeSnapshot,racingWork));
+    racingHandshake.MarkLatestDirty({false,6});
+    assert(racingHandshake.TryPrepareLatest({false,6},handshakeSnapshot,racingWork));
+    racingHandshake.MarkLatestDirty({false,7});
+    racingHandshake.CompleteLatestTransfer(racingWork,true);
+    assert(racingHandshake.TryPrepareLatest({false,7},handshakeSnapshot,racingWork));
+    assert(racingWork.Kind==S::StateMessageKind::ResyncRequired);
 
     assert(owner.Set({10},{100,Timing::TimeReliability::Synchronized})==S::StateSetStatus::Changed);
 
@@ -186,6 +220,16 @@ int main(){
     encoded=S::EncodeStateControl(sourceResync,bytes.data(),bytes.size());assert(encoded);
     admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteRequester});
     assert(admitted.Disposition==Primitive::PrimitiveAdmissionDisposition::Rejected);
+
+    assert(runtime.RequireSourceResync<RuntimeState>(remoteRequester.Device)==S::StateRemoteStatus::Success);
+    adapter.Accept=false;
+    assert(!runtime.ServiceLatest<RuntimeState>());
+    assert(adapter.Last.Kind==S::StateMessageKind::ResyncRequired && !adapter.Last.HasSnapshot);
+    adapter.Accept=true;
+    assert(runtime.ServiceLatest<RuntimeState>());
+    assert(adapter.Last.Owner==local && adapter.Last.Requester==remoteRequester);
+    assert(adapter.Last.Session==S::StateSessionToken{41});
+    assert(!runtime.ServiceLatest<RuntimeState>());
 
     // Requester side: source snapshot is committed before SubscribeAccepted is offered.
     const auto session=runtime.SubscribeFrom<RuntimeState>(remoteOwner.Device);assert(session);
