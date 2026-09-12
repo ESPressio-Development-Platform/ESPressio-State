@@ -91,11 +91,13 @@ int main(){
     assert(adapter.Validations==1);
 
     const auto& contract=adapter.Contract;
+    constexpr auto ExpectedPublicationMaximum=S::MaximumCompleteStatePublicationWireBytes<TransportState,Serializable::CBOR>;
+    constexpr auto ExpectedSnapshotMaximum=S::MaximumCompleteStateSnapshotControlWireBytes<TransportState,Serializable::CBOR>;
     assert(contract.TypeId==TransportState::TypeId);
     assert(contract.Format==S::StatePayloadFormat::CBOR);
-    assert(contract.MaximumPublicationWireBytes==S::MaximumCompleteStatePublicationWireBytes<TransportState,Serializable::CBOR>);
+    assert(contract.MaximumPublicationWireBytes==ExpectedPublicationMaximum);
     assert(contract.MaximumControlWireBytes==S::StateControlWireHeaderSize);
-    assert(contract.MaximumSnapshotControlWireBytes==S::MaximumCompleteStateSnapshotControlWireBytes<TransportState,Serializable::CBOR>);
+    assert(contract.MaximumSnapshotControlWireBytes==ExpectedSnapshotMaximum);
     assert(contract.MaximumAcceptanceControlWireBytes==S::StateAcceptanceControlWireHeaderSize);
     assert(contract.ConvergencePolicy!=nullptr && contract.SupportsOwnerDiscovery);
 
