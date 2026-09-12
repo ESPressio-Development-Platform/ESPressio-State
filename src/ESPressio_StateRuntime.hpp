@@ -1,5 +1,7 @@
 #pragma once
 #include <array>
+#include <atomic>
+#include <shared_mutex>
 #include <exception>
 #include <tuple>
 #include <type_traits>
@@ -88,7 +90,9 @@ class Runtime final {
                                                           TConfigurations::SubscriberCapacity>...>;
     using SelectorStates=std::tuple<Detail::StateSelectorState<TConfigurations>...>;
     bool _initialized=false;
-    bool _running=false;
+    std::atomic<bool> _running{false};
+    std::atomic<bool> _closing{false};
+    mutable System::Synchronization::ReadWriteLock _lifecycle;
     bool _configurationError=false;
     RemoteTables _remote{};
     SelectorStates _selectors{};
@@ -208,7 +212,7 @@ class Runtime final {
         using C=Detail::ConfigurationForT<TState,TConfigurations...>;
         static_assert(!std::is_void_v<C> && TState::IsTransmissibleState);
         static_assert(C::RemoteOwnerCapacity>0,"Remote State subscription requires MaximumRemoteOwners > 0");
-        if(!_running) return {StateRemoteStatus::NotRunning,{}};
+        if(!IsRunning()) return {StateRemoteStatus::NotRunning,{}};
         if(!owner || !StateTypeRuntime<TState>::Get().HasTransport()) return {StateRemoteStatus::TransportUnavailable,{}};
         System::DeviceRuntimeIdentity requester{};
         if(!System::RuntimeIdentity::TryRead(requester)) return {StateRemoteStatus::InvalidIdentity,{}};
@@ -275,6 +279,7 @@ class Runtime final {
 
 public:
     Runtime()=default;
+    ~Runtime() { if(_initialized) (void)Shutdown(); }
     Runtime(const Runtime&)=delete;
     Runtime& operator=(const Runtime&)=delete;
 
@@ -312,6 +317,7 @@ public:
         if(_initialized) return StateRuntimeStatus::AlreadyInitialized;
         if(_configurationError) return StateRuntimeStatus::InvalidConfiguration;
         if(!directory.IsFrozen()) return StateRuntimeStatus::InvalidDirectory;
+        { std::unique_lock<System::Synchronization::ReadWriteLock> lock(_lifecycle); }
         { std::lock_guard<System::Synchronization::Mutex> lock(_tokenMutex); }
         Detail::StateProcessTokenAuthority::Initialize();
         StateRuntimeStatus status=StateRuntimeStatus::Success;
@@ -326,6 +332,9 @@ public:
         return StateRuntimeStatus::Success;
     }
     StateRuntimeStatus Start() noexcept {
+        if(_closing.load(std::memory_order_acquire)) return StateRuntimeStatus::Stopping;
+        std::unique_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
+        if(_closing.load(std::memory_order_acquire)) return StateRuntimeStatus::Stopping;
         if(!_initialized) return StateRuntimeStatus::NotInitialized;
         if(_running) return StateRuntimeStatus::Frozen;
         if(!(ValidateOne<TConfigurations>() && ...)) return StateRuntimeStatus::InvalidConfiguration;
@@ -335,8 +344,16 @@ public:
     }
     StateRuntimeStatus Shutdown() noexcept {
         if(!_initialized) return StateRuntimeStatus::NotInitialized;
+        // Close before waiting for active callers. No callback may initiate Shutdown
+        // from inside a Runtime operation whose lease it would itself need to drain.
+        _closing.store(true,std::memory_order_release);
+        _running.store(false,std::memory_order_release);
+        (StateTypeRuntime<typename TConfigurations::StateType>::Get().RequestStop(),...);
+        std::unique_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
+        _running.store(false,std::memory_order_release);
         (StateTypeRuntime<typename TConfigurations::StateType>::Get().Shutdown(),...);
-        _running=false;
+        (Table<typename TConfigurations::StateType>().CloseSessions(),...);
+        { std::lock_guard<System::Synchronization::Mutex> lock(_tokenMutex);_selectors={}; }
         return StateRuntimeStatus::Success;
     }
 
@@ -359,9 +376,11 @@ public:
 
     template<class TState>
     StateSubscriptionResult ReserveSubscriptionSession(const System::DeviceIdentifier& owner) noexcept {
+        if(!IsRunning()) return {StateRemoteStatus::NotRunning,{}};
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
         using C=Detail::ConfigurationForT<TState,TConfigurations...>;
         static_assert(!std::is_void_v<C> && TState::IsTransmissibleState);
-        if(!_running) return {StateRemoteStatus::NotRunning,{}};
+        if(!IsRunning()) return {StateRemoteStatus::NotRunning,{}};
         StateSessionToken token{};
         {
             std::lock_guard<System::Synchronization::Mutex> lock(_tokenMutex);
@@ -375,6 +394,8 @@ public:
     /// <summary>Starts one concrete remote-owner session and emits a semantic SubscribeRequest.</summary>
     template<class TState>
     StateSubscriptionResult SubscribeFrom(const System::DeviceIdentifier& owner) noexcept {
+        if(!IsRunning()) return {StateRemoteStatus::NotRunning,{}};
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
         return StartConcreteSubscription<TState>(owner,StateSubscriptionSelectorMode::SpecificDevice);
     }
 
@@ -387,7 +408,9 @@ public:
         static_assert(!std::is_void_v<C> && TState::IsTransmissibleState);
         static_assert(C::RemoteOwnerCapacity>0,"SubscribeAny requires MaximumRemoteOwners > 0");
         StateAnySubscriptionResult<C::RemoteOwnerCapacity> result{};
-        if(!_running) { result.Status=StateRemoteStatus::NotRunning; return result; }
+        if(!IsRunning()) { result.Status=StateRemoteStatus::NotRunning; return result; }
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
+        if(!IsRunning()) { result.Status=StateRemoteStatus::NotRunning; return result; }
         if(!StateTypeRuntime<TState>::Get().HasTransport() || !StateTypeRuntime<TState>::Get().SupportsOwnerDiscovery()) {
             result.Status=StateRemoteStatus::TransportUnavailable;return result;
         }
@@ -424,6 +447,8 @@ public:
     /// <summary>Handles a later concrete-owner discovery for an already-active AnyDevice selector.</summary>
     template<class TState>
     StateSubscriptionResult ExpandAnyTo(const System::DeviceIdentifier& owner) noexcept {
+        if(!IsRunning()) return {StateRemoteStatus::NotRunning,{}};
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
         {
             std::lock_guard<System::Synchronization::Mutex> lock(_tokenMutex);
             if(Selector<TState>().Mode!=StateSubscriptionSelectorMode::AnyDevice) return {StateRemoteStatus::Conflict,{}};
@@ -436,7 +461,9 @@ public:
     /// lost remote notification is reclaimed by the source's bounded continuity/replacement rules.</remarks>
     template<class TState>
     StateRemoteStatus Unsubscribe(const StateSubscriptionHandle& handle,StateReplicaRelease disposition) noexcept {
-        if(!_running) return StateRemoteStatus::NotRunning;
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
         if(handle.TypeId!=TState::TypeId || !handle) return StateRemoteStatus::InvalidSession;
         System::DeviceRuntimeIdentity requester{};
         if(!System::RuntimeIdentity::TryRead(requester)) return StateRemoteStatus::InvalidIdentity;
@@ -468,6 +495,9 @@ public:
 
     template<class TState>
     StateRemoteStatus StopAny() noexcept {
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
         std::lock_guard<System::Synchronization::Mutex> lock(_tokenMutex);
         auto& selector=Selector<TState>();
         if(selector.Mode!=StateSubscriptionSelectorMode::AnyDevice) return StateRemoteStatus::Conflict;
@@ -482,34 +512,51 @@ public:
     }
 
     StateRemoteStatus AllocateResyncToken(StateResyncToken& output) noexcept {
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
         std::lock_guard<System::Synchronization::Mutex> lock(_tokenMutex);
         return Detail::StateProcessTokenAuthority::TryAllocate(output)?StateRemoteStatus::Success:StateRemoteStatus::TokenExhausted;
     }
 
     template<class TState> StateRemoteStatus InstallSubscribeSnapshot(const System::DeviceRuntimeIdentity& owner,StateSessionToken session,
                                                                        StateVersion version,const StateSnapshot<TState>& snapshot) noexcept {
-        return _running?Table<TState>().InstallSubscribeSnapshot(owner,session,version,snapshot):StateRemoteStatus::NotRunning;
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
+        return IsRunning()?Table<TState>().InstallSubscribeSnapshot(owner,session,version,snapshot):StateRemoteStatus::NotRunning;
     }
     template<class TState> StateRemoteStatus InstallSubscribeNoValue(const System::DeviceRuntimeIdentity& owner,StateSessionToken session) noexcept {
-        return _running?Table<TState>().InstallSubscribeNoValue(owner,session):StateRemoteStatus::NotRunning;
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
+        return IsRunning()?Table<TState>().InstallSubscribeNoValue(owner,session):StateRemoteStatus::NotRunning;
     }
     template<class TState> StateRemoteStatus InstallBaselineSnapshot(const System::DeviceRuntimeIdentity& owner,StateSessionToken session,
                                                                      StateVersion version,const StateSnapshot<TState>& snapshot) noexcept {
-        return _running?Table<TState>().InstallBaselineSnapshot(owner,session,version,snapshot):StateRemoteStatus::NotRunning;
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
+        return IsRunning()?Table<TState>().InstallBaselineSnapshot(owner,session,version,snapshot):StateRemoteStatus::NotRunning;
     }
     template<class TState> StateRemoteStatus ApplyRemotePublication(const System::DeviceRuntimeIdentity& owner,StateSessionToken session,
                                                                     StateVersion version,const StateSnapshot<TState>& snapshot) noexcept {
-        return _running?Table<TState>().ApplyPublication(owner,session,version,snapshot):StateRemoteStatus::NotRunning;
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
+        return IsRunning()?Table<TState>().ApplyPublication(owner,session,version,snapshot):StateRemoteStatus::NotRunning;
     }
     template<class TState> StateRemoteStatus RequireRemoteResync(const System::DeviceIdentifier& owner) noexcept {
-        return _running?Table<TState>().RequireResync(owner):StateRemoteStatus::NotRunning;
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
+        return IsRunning()?Table<TState>().RequireResync(owner):StateRemoteStatus::NotRunning;
     }
     template<class TState> StateRemoteStatus BeginRemoteResync(const System::DeviceIdentifier& owner,StateResyncToken token) noexcept {
-        return _running?Table<TState>().BeginResync(owner,token):StateRemoteStatus::NotRunning;
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
+        return IsRunning()?Table<TState>().BeginResync(owner,token):StateRemoteStatus::NotRunning;
     }
     template<class TState> StateRemoteStatus InstallResyncSnapshot(const System::DeviceRuntimeIdentity& owner,StateSessionToken session,
                                                                    StateResyncToken token,StateVersion version,const StateSnapshot<TState>& snapshot) noexcept {
-        return _running?Table<TState>().InstallResyncSnapshot(owner,session,token,version,snapshot):StateRemoteStatus::NotRunning;
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
+        return IsRunning()?Table<TState>().InstallResyncSnapshot(owner,session,token,version,snapshot):StateRemoteStatus::NotRunning;
     }
     template<class TState> bool TryReadRemote(const System::DeviceIdentifier& owner,StateSnapshot<TState>& output) const noexcept {
         return Table<TState>().TryReadRemote(owner,output);
@@ -518,26 +565,38 @@ public:
         return Table<TState>().SessionState(owner);
     }
     template<class TState> StateRemoteStatus Unsubscribe(const System::DeviceIdentifier& owner,StateReplicaRelease disposition) noexcept {
-        return _running?Table<TState>().Unsubscribe(owner,disposition):StateRemoteStatus::NotRunning;
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
+        return IsRunning()?Table<TState>().Unsubscribe(owner,disposition):StateRemoteStatus::NotRunning;
     }
     template<class TState> StateRemoteStatus ForgetRemote(const System::DeviceIdentifier& owner) noexcept {
-        return _running?Table<TState>().ForgetRemote(owner):StateRemoteStatus::NotRunning;
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
+        return IsRunning()?Table<TState>().ForgetRemote(owner):StateRemoteStatus::NotRunning;
     }
     template<class TState> std::size_t RemoteOwnersInUse() const noexcept { return Table<TState>().RemoteOwnersInUse(); }
 
     template<class TState> StateRemoteStatus ReserveSourceSubscriber(const System::DeviceRuntimeIdentity& requester,StateSessionToken session) noexcept {
-        return _running?Table<TState>().ReserveSubscriber(requester,session):StateRemoteStatus::NotRunning;
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
+        return IsRunning()?Table<TState>().ReserveSubscriber(requester,session):StateRemoteStatus::NotRunning;
     }
     template<class TState> StateRemoteStatus ActivateSourceSubscriber(const System::DeviceRuntimeIdentity& requester,StateSessionToken session,
                                                                       bool hasBaseline,StateVersion baseline={}) noexcept {
-        return _running?Table<TState>().ActivateSubscriber(requester,session,hasBaseline,baseline):StateRemoteStatus::NotRunning;
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
+        return IsRunning()?Table<TState>().ActivateSubscriber(requester,session,hasBaseline,baseline):StateRemoteStatus::NotRunning;
     }
     template<class TState> StateRemoteStatus AcceptSourceBaseline(const System::DeviceRuntimeIdentity& requester,StateSessionToken session,
                                                                   StateVersion version) noexcept {
-        return _running?Table<TState>().AcceptSubscriberBaseline(requester,session,version):StateRemoteStatus::NotRunning;
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
+        return IsRunning()?Table<TState>().AcceptSubscriberBaseline(requester,session,version):StateRemoteStatus::NotRunning;
     }
     template<class TState> StateRemoteStatus RequireSourceResync(const System::DeviceIdentifier& requester) noexcept {
-        return _running?Table<TState>().RequireSubscriberResync(requester):StateRemoteStatus::NotRunning;
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle);
+        return IsRunning()?Table<TState>().RequireSubscriberResync(requester):StateRemoteStatus::NotRunning;
     }
     template<class TState> bool SourceSubscriberDirty(const System::DeviceIdentifier& requester) const noexcept { return Table<TState>().SubscriberDirty(requester); }
     template<class TState> StateRemoteSessionState GetSourceSubscriberStatus(const System::DeviceIdentifier& requester) const noexcept { return Table<TState>().SubscriberState(requester); }
@@ -550,7 +609,10 @@ public:
     /// this older transfer cannot erase the newer authoritative truth.</remarks>
     template<class TState>
     StateTransportAdmission ServiceLatest() noexcept {
-        if(!_running) return {StateTransportAdmissionStatus::Quiesced};
+        if(!IsRunning()) return {StateTransportAdmissionStatus::Quiesced};
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle,std::try_to_lock);
+        if(!activity) return {StateTransportAdmissionStatus::CapacityUnavailable};
+        if(!IsRunning()) return {StateTransportAdmissionStatus::Quiesced};
         System::DeviceRuntimeIdentity owner{};
         if(!System::RuntimeIdentity::TryRead(owner)) return {StateTransportAdmissionStatus::InvalidDestination};
         StateSnapshot<TState> snapshot{};StateVersion version{};
@@ -578,7 +640,9 @@ public:
     StateRemoteAdmissionResult AdmitRemote(const std::uint8_t* data,std::size_t size,
                                            StateValidatedIngressContext ingress) noexcept {
         using D=Primitive::PrimitiveAdmissionDisposition;
-        if(!_running) return {D::TemporarilyUnavailable,StateWireStatus::Success};
+        if(!IsRunning()) return {D::TemporarilyUnavailable,StateWireStatus::Success};
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle,std::try_to_lock);
+        if(!activity || !IsRunning()) return {D::TemporarilyUnavailable,StateWireStatus::Success};
         StateDecodedIngress<TState> decoded{};
         auto parsed=DecodeValidatedStateIngress<TState,Format>(data,size,ingress,decoded);
         if(!parsed) return parsed;
@@ -718,6 +782,6 @@ public:
         return {MapRemoteAdmission(status),StateWireStatus::Success};
     }
 
-    bool IsRunning() const noexcept { return _running; }
+    bool IsRunning() const noexcept { return _running.load(std::memory_order_acquire) && !_closing.load(std::memory_order_acquire); }
 };
 }

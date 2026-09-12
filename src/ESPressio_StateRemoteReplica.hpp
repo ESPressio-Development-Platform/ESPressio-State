@@ -137,6 +137,15 @@ public:
         else return false;
     }();
 
+    void CloseSessions() noexcept {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        for(auto& slot:_owners) {
+            if(!slot.Occupied) continue;
+            slot.SessionState=StateRemoteSessionState::Inactive;
+            slot.Resync={};
+        }
+        for(auto& slot:_subscribers) slot={};
+    }
     void InitializeSynchronization() noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
     }

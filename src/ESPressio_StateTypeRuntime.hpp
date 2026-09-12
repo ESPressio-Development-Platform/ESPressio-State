@@ -153,6 +153,7 @@ public:
     }
     bool ValidateStart() const noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        if(_phase.load(std::memory_order_relaxed)!=Phase::Prepared) return false;
         for(auto* target=_observerTargets;target;target=target->Next)
             if(!target->Linked.load(std::memory_order_relaxed) || !target->Validate || !target->Validate(target->Owner)) return false;
         if(_transport && (!_transport.Validate || !_transport.Validate(_transport.Owner,_transport.Contract))) return false;
@@ -217,10 +218,22 @@ public:
         _restoredDuringInitialize=true;
         return StateRuntimeStatus::Success;
     }
+    void RequestStop() noexcept {
+        auto phase=_phase.load(std::memory_order_acquire);
+        while(phase==Phase::Prepared || phase==Phase::Running) {
+            if(_phase.compare_exchange_weak(phase,Phase::Stopping,std::memory_order_acq_rel)) break;
+        }
+    }
     StateRuntimeStatus Shutdown() noexcept {
         auto phase=_phase.load(std::memory_order_acquire);
         if(phase==Phase::Uninitialized || phase==Phase::Stopped) return StateRuntimeStatus::NotInitialized;
         _phase.store(Phase::Stopping,std::memory_order_release);
+        // An owner commit may already hold the canonical mutex. Drain it before
+        // releasing any borrowed caller-owned binding, while rejecting new Sets.
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        _convergence={};
+        _transport={};
+        _persistence={};
         _phase.store(Phase::Stopped,std::memory_order_release);
         return StateRuntimeStatus::Success;
     }

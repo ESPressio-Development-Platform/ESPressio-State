@@ -8,6 +8,7 @@
 #include <string_view>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 
 using namespace ESPressio;
 namespace S=ESPressio::State;
@@ -66,8 +67,22 @@ struct AdmissionMutex final : System::Synchronization::IMutex {
     }
     void Unlock() noexcept override { Mutex.unlock(); }
 };
+struct AdmissionReadWrite final : System::Synchronization::IReadWriteLock {
+    inline static bool RejectShared=false;
+    std::shared_mutex Mutex;
+    void Lock() noexcept override { assert(!AdmissionMutex::NonBlockingOnly);Mutex.lock(); }
+    bool TryLock() noexcept override { return Mutex.try_lock(); }
+    void Unlock() noexcept override { Mutex.unlock(); }
+    void LockShared() noexcept override { assert(!AdmissionMutex::NonBlockingOnly);Mutex.lock_shared(); }
+    bool TryLockShared() noexcept override { return !RejectShared && Mutex.try_lock_shared(); }
+    void UnlockShared() noexcept override { Mutex.unlock_shared(); }
+};
 struct AdmissionSynchronization final : System::Synchronization::ISynchronizationProvider {
     std::unique_ptr<System::Synchronization::ISignal> CreateBinarySignal(bool) override { return {}; }
+    std::unique_ptr<System::Synchronization::IReadWriteLock> CreateReadWriteLock() override {
+        assert(!AdmissionMutex::NonBlockingOnly);
+        return std::make_unique<AdmissionReadWrite>();
+    }
     std::unique_ptr<System::Synchronization::IMutex> CreateMutex() override {
         assert(!AdmissionMutex::NonBlockingOnly);
         return std::make_unique<AdmissionMutex>();
@@ -188,6 +203,9 @@ int main(){
         local,remoteRequester,S::StateSessionToken{41},{},0};
     std::array<std::uint8_t,S::MaximumCompleteStateSnapshotControlWireBytes<RuntimeState,Format>> bytes{};
     auto encoded=S::EncodeStateControl(subscribe,bytes.data(),bytes.size());assert(encoded);
+    AdmissionReadWrite::RejectShared=true;
+    assert(admit(bytes.data(),encoded.Bytes,{remoteRequester}).Disposition==Primitive::PrimitiveAdmissionDisposition::TemporarilyUnavailable);
+    AdmissionReadWrite::RejectShared=false;
     for(unsigned attempt=1;attempt<=4;++attempt) {
         AdmissionMutex::RejectAttempt=attempt;
         const auto blocked=admit(bytes.data(),encoded.Bytes,{remoteRequester});

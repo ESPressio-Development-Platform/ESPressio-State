@@ -245,3 +245,32 @@ convergence lifetime safely; then frozen wake/continuity callbacks, finite campa
 remote observer/tooling and final State eradication/resource/docs gates. Plain Runtime running
 state and shutdown concurrency are still open in this checkpoint. The user's living-handoff
 requirement remains active; save exact current published and uncommitted state before any exit.
+
+
+## 2026-09-12T13:51:56.063139+00:00 — Runtime quiescence and borrowed binding teardown
+
+Parent e5b0b0956e4eeb8301b8a07ec760e55abf342320, tree
+043de64b149c83694ce8d6df000d3c58652ef1de. CI 34697102823 host-contracts and
+esp32-typed-surface both SUCCESS. Canonical living handoff is Revision 108.
+
+A neutral System read/write lifecycle gate is resolved during Initialize. Admission and latest
+service take nonblocking shared leases; local mutating operations participate in the same gate.
+Atomic closing/running flags reject new work before shutdown waits for existing operations.
+Shutdown requests Type stop, drains active operations exclusively, drains canonical owner commits,
+detaches transport/persistence/convergence bindings, closes sessions and selectors, and retains
+readable canonical/remote snapshots. An initialized Runtime destructor performs the same cleanup.
+Start cannot revive a stopped Type. Shutdown is external lifecycle control; invoking it from
+inside a Runtime operation's bound callback would attempt to drain itself and is prohibited.
+
+The new shutdown host fixture failed on the predecessor because shutdown returned before an
+owner commit completed. It now verifies commit drain, adapter-service drain, rejection after
+closure, retained snapshots, binding detach and no restart. The admission instrumentation also
+covers the lifecycle try-lock and forbids lazy read/write-lock allocation. All 15 active host
+executables passed. After the final early-closure guards, shutdown/remote_runtime/subscriptions
+were rebuilt and passed again. CI for this new checkpoint is required after publication.
+
+Still open: failed/partial initialization ownership and rollback audit (avoid rolling back a
+Type prepared by another Runtime; abandoned convergence staging needs explicit cleanup); exact
+source duplicate ResyncAccepted handling; adapter wake/continuity and finite convergence pursuit;
+remote observations and remote dynamic tooling; legacy/resource/docs/final gates. Existing
+ESP32 cooperative execution and P4 durability gaps remain later platform migration work.
