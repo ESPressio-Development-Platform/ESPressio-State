@@ -23,3 +23,4 @@
 #include "ESPressio_StateDescriptor.hpp"
 #include "ESPressio_StateRuntimeConfiguration.hpp"
 #include "ESPressio_StateRuntime.hpp"
+#include "ESPressio_StateIntrospection.hpp"

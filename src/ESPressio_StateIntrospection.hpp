@@ -1,231 +1,142 @@
 #pragma once
-
-#ifndef ESPRESSIO_STATE_ENABLE_INTROSPECTION
-#define ESPRESSIO_STATE_ENABLE_INTROSPECTION 1
-#endif
-
-#if ESPRESSIO_STATE_ENABLE_INTROSPECTION
-
 #include <cstddef>
-#include <cstring>
-#include <tuple>
-#include <type_traits>
-#include <utility>
+#include <cstdint>
+#include <ESPressio_TypeDirectory.hpp>
+#include "ESPressio_StateDescriptor.hpp"
+#include "ESPressio_StateRuntime.hpp"
 
-#include "ESPressio_RemoteStateManager.hpp"
-#include "ESPressio_StateContract.hpp"
+namespace ESPressio::State {
 
-namespace ESPressio {
-namespace State {
-
-/// <summary>Provides optional symbolic metadata for a state definition.</summary>
-/// <typeparam name="TDefinition">State definition being inspected.</typeparam>
-/// <remarks>A definition may expose <c>static constexpr const char* Name</c>. Names are diagnostic metadata only and do not participate in state identity, storage, transport, subscription matching, or ordering.</remarks>
-
-template<typename TDefinition, typename = void>
-struct StateIntrospectionTraits {
-    /// <summary>Optional human-readable state name, or null when none is declared.</summary>
-    static constexpr const char* Name = nullptr;
+/// <summary>Immutable P1 metadata view for one registered State Type.</summary>
+/// <remarks>The pointers refer to the frozen caller-owned TypeDirectory and static State family
+/// extension. No runtime value, owner/session occupancy or mutable registry state is copied here.</remarks>
+struct StateTypeIntrospectionEntry final {
+    const Primitive::PrimitiveTypeDescriptor* Common=nullptr;
+    const StateTypeDescriptor* State=nullptr;
+    constexpr explicit operator bool() const noexcept { return Common && State; }
 };
 
-/// <summary>Introspection specialization for state definitions exposing a symbolic <c>Name</c>.</summary>
-
-template<typename TDefinition>
-struct StateIntrospectionTraits<
-    TDefinition,
-    std::void_t<decltype(TDefinition::Name)>
-> {
-    static_assert(
-        std::is_convertible_v<decltype(TDefinition::Name), const char*>,
-        "State definition Name must be convertible to const char*"
-    );
-    /// <summary>Human-readable name declared by the state definition.</summary>
-    static constexpr const char* Name = TDefinition::Name;
+enum class StateTypeEnumerationStatus : std::uint8_t {
+    Success,
+    InvalidDirectory,
+    InsufficientOutput
+};
+struct StateTypeEnumerationResult final {
+    StateTypeEnumerationStatus Status=StateTypeEnumerationStatus::InvalidDirectory;
+    std::size_t Count=0;
+    std::size_t Required=0;
+    constexpr explicit operator bool() const noexcept { return Status==StateTypeEnumerationStatus::Success; }
 };
 
-/// <summary>Resolves the optional symbolic name associated with a state definition.</summary>
-template<typename TDefinition>
-inline constexpr const char* StateNameOf =
-    StateIntrospectionTraits<TDefinition>::Name;
+/// <summary>Enumerates the frozen State subset of a P1 Primitive TypeDirectory into caller storage.</summary>
+/// <remarks>Registration order has no semantics; the directory's deterministic Family+TypeId order
+/// is retained. Insufficient output reports the complete required count while copying only Capacity
+/// entries. No allocation, mutable parallel registry or callback is involved.</remarks>
+inline StateTypeEnumerationResult EnumerateStateTypes(Primitive::TypeDirectoryView directory,
+                                                       StateTypeIntrospectionEntry* output,
+                                                       std::size_t capacity) noexcept {
+    if(!directory.IsFrozen()) return {};
+    std::size_t count=0,required=0;
+    for(const auto& common:directory) {
+        if(common.Key.Family!=StateFamilyId) continue;
+        const auto* state=GetStateTypeDescriptor(common);
+        if(!state) continue;
+        if(count<capacity && output) output[count++]={&common,state};
+        ++required;
+    }
+    return {required<=capacity?StateTypeEnumerationStatus::Success:StateTypeEnumerationStatus::InsufficientOutput,
+            count,required};
+}
 
-/// <summary>Combines typed remote-state data with runtime-identifiable state metadata.</summary>
-/// <typeparam name="TDefinition">State definition represented by the snapshot.</typeparam>
+/// <summary>Finds immutable State family metadata by runtime StateTypeId in a frozen P1 directory.</summary>
+inline StateTypeIntrospectionEntry FindStateType(Primitive::TypeDirectoryView directory,StateTypeId typeId) noexcept {
+    if(!directory.IsFrozen() || !typeId) return {};
+    const auto* common=directory.Find({StateFamilyId,typeId.Value()});
+    if(!common) return {};
+    const auto* state=GetStateTypeDescriptor(*common);
+    return state?StateTypeIntrospectionEntry{common,state}:StateTypeIntrospectionEntry{};
+}
 
-template<typename TDefinition>
-struct RemoteStateIntrospectionSnapshot final {
-    /// <summary>State definition represented by this snapshot.</summary>
-    using Definition = TDefinition;
-    /// <summary>Value type represented by the state definition.</summary>
-    using Value = StateValueType<TDefinition>;
-
-    /// <summary>Remote device owning the state.</summary>
-    DeviceIdentifier Device{};
-    /// <summary>Stable state type identifier.</summary>
-    StateTypeId TypeId = StateTypeIdOf<TDefinition>;
-    /// <summary>Optional symbolic state name.</summary>
-    const char* Name = StateNameOf<TDefinition>;
-    /// <summary>Typed remote-state snapshot.</summary>
-    RemoteStateSnapshot<Value> State{};
+enum class StateDynamicRemoteReadStatus : std::uint8_t {
+    Success,
+    UnknownType,
+    NotTransmissible,
+    NoValue,
+    InsufficientOutput,
+    SerializationFailure,
+    UnsupportedFormat
+};
+struct StateDynamicRemoteReadResult final {
+    StateDynamicRemoteReadStatus Status=StateDynamicRemoteReadStatus::UnknownType;
+    std::size_t Bytes=0;
+    Timing::QualifiedTime TruthTime{};
+    StateRemoteSessionState Session=StateRemoteSessionState::Inactive;
+    constexpr explicit operator bool() const noexcept { return Status==StateDynamicRemoteReadStatus::Success; }
 };
 
-/// <summary>Provides runtime lookup and iteration across the typed definitions in a state contract.</summary>
-/// <typeparam name="TContract">State contract whose definitions are exposed for introspection.</typeparam>
+namespace Detail {
+template<class TState,class Format>
+StateDynamicRemoteReadResult SerializeDynamicRemoteSnapshot(const StateSnapshot<TState>& snapshot,
+                                                             StateRemoteSessionState session,
+                                                             std::uint8_t* output,std::size_t capacity) {
+    using Value=typename TState::ValueType;
+    constexpr auto maximum=Serializable::MaximumSerializedSize<Value,Format>;
+    const auto encoded=SerializeStateValue<Value,Format>(snapshot.Value,output,capacity);
+    if(!encoded) return {capacity<maximum?StateDynamicRemoteReadStatus::InsufficientOutput:
+                                         StateDynamicRemoteReadStatus::SerializationFailure,
+                         0,snapshot.TruthTime,session};
+    return {StateDynamicRemoteReadStatus::Success,encoded.Bytes,snapshot.TruthTime,session};
+}
 
-template<typename TContract>
-class StateIntrospection final {
-private:
-    template<std::size_t TIndex = 0, typename TCallback>
-    static bool VisitType(
-        StateTypeId typeId,
-        TCallback&& callback
-    ) {
-        if constexpr (TIndex < TContract::StateCount) {
-            using Definition = typename std::tuple_element<
-                TIndex,
-                typename TContract::Definitions
-            >::type;
-
-            if (typeId == StateTypeIdOf<Definition>) {
-                callback(StateTag<Definition>{});
-                return true;
-            }
-            return VisitType<TIndex + 1>(
-                typeId,
-                std::forward<TCallback>(callback)
-            );
+template<class TState,class... TConfigurations>
+StateDynamicRemoteReadResult ReadDynamicRemoteType(const Runtime<TConfigurations...>& runtime,
+                                                    const System::DeviceIdentifier& owner,
+                                                    StatePayloadFormat format,
+                                                    std::uint8_t* output,std::size_t capacity) {
+    if constexpr(!TState::IsTransmissibleState) {
+        (void)runtime;(void)owner;(void)format;(void)output;(void)capacity;
+        return {StateDynamicRemoteReadStatus::NotTransmissible};
+    } else {
+        StateSnapshot<TState> snapshot{};
+        const auto session=runtime.template GetRemoteSessionStatus<TState>(owner);
+        if(!runtime.template TryReadRemote<TState>(owner,snapshot))
+            return {StateDynamicRemoteReadStatus::NoValue,0,{},session};
+        switch(format) {
+            case StatePayloadFormat::DirectBinary:
+                return SerializeDynamicRemoteSnapshot<TState,Serializable::DirectBinary>(snapshot,session,output,capacity);
+            case StatePayloadFormat::CBOR:
+                return SerializeDynamicRemoteSnapshot<TState,Serializable::CBOR>(snapshot,session,output,capacity);
+            case StatePayloadFormat::JSON:
+                return SerializeDynamicRemoteSnapshot<TState,Serializable::JSON>(snapshot,session,output,capacity);
         }
-        return false;
+        return {StateDynamicRemoteReadStatus::UnsupportedFormat,0,snapshot.TruthTime,session};
     }
-
-    template<std::size_t TIndex = 0>
-    static bool FindTypeIdByName(
-        const char* name,
-        StateTypeId& typeId
-    ) {
-        if constexpr (TIndex < TContract::StateCount) {
-            using Definition = typename std::tuple_element<
-                TIndex,
-                typename TContract::Definitions
-            >::type;
-            const char* candidate = StateNameOf<Definition>;
-            if (
-                candidate != nullptr &&
-                name != nullptr &&
-                std::strcmp(candidate, name) == 0
-            ) {
-                typeId = StateTypeIdOf<Definition>;
-                return true;
-            }
-            return FindTypeIdByName<TIndex + 1>(name, typeId);
-        }
-        return false;
-    }
-
-    template<std::size_t TIndex = 0, typename TManager, typename TCallback>
-    static void VisitDeviceStates(
-        const TManager& manager,
-        const DeviceIdentifier& device,
-        TCallback& callback
-    ) {
-        if constexpr (TIndex < TContract::StateCount) {
-            using Definition = typename std::tuple_element<
-                TIndex,
-                typename TContract::Definitions
-            >::type;
-            RemoteStateSnapshot<StateValueType<Definition>> snapshot;
-            if (
-                manager.template Read<Definition>(device, snapshot) &&
-                snapshot.HasValue
-            ) {
-                callback(RemoteStateIntrospectionSnapshot<Definition>{
-                    device,
-                    StateTypeIdOf<Definition>,
-                    StateNameOf<Definition>,
-                    snapshot
-                });
-            }
-            VisitDeviceStates<TIndex + 1>(manager, device, callback);
-        }
-    }
-
-public:
-    /// <summary>Attempts to resolve a runtime state type identifier to its optional symbolic name.</summary>
-    static bool TryGetName(
-        StateTypeId typeId,
-        const char*& name
-    ) {
-        name = nullptr;
-        return VisitType(typeId, [&](auto tag) {
-            using Definition = typename decltype(tag)::Definition;
-            name = StateNameOf<Definition>;
-        }) && name != nullptr;
-    }
-
-    /// <summary>Attempts to resolve a symbolic state name to its stable type identifier.</summary>
-    static bool TryGetTypeId(
-        const char* name,
-        StateTypeId& typeId
-    ) {
-        typeId = 0;
-        return FindTypeIdByName(name, typeId);
-    }
-
-    /// <summary>Visits the strongly typed state definition corresponding to a runtime type identifier.</summary>
-    /// <typeparam name="TCallback">Callable accepting a typed <c>StateTag</c>.</typeparam>
-    /// <returns><c>true</c> when the type identifier belongs to the contract.</returns>
-    template<typename TCallback>
-    static bool Visit(
-        StateTypeId typeId,
-        TCallback&& callback
-    ) {
-        return VisitType(typeId, std::forward<TCallback>(callback));
-    }
-
-    /// <summary>Reads one typed remote state and enriches it with introspection metadata.</summary>
-    template<typename TDefinition, std::size_t TMaximumDevices>
-    static bool Read(
-        const RemoteStateManager<TContract, TMaximumDevices>& manager,
-        const DeviceIdentifier& device,
-        RemoteStateIntrospectionSnapshot<TDefinition>& output
-    ) {
-        static_assert(
-            TContract::template Contains<TDefinition>,
-            "State definition is not part of this StateContract"
-        );
-        RemoteStateSnapshot<StateValueType<TDefinition>> snapshot;
-        if (!manager.template Read<TDefinition>(device, snapshot)) return false;
-        output.Device = device;
-        output.TypeId = StateTypeIdOf<TDefinition>;
-        output.Name = StateNameOf<TDefinition>;
-        output.State = snapshot;
-        return true;
-    }
-
-    /// <summary>Visits each state with a retained value for one remote device.</summary>
-    template<std::size_t TMaximumDevices, typename TCallback>
-    static void ForEachState(
-        const RemoteStateManager<TContract, TMaximumDevices>& manager,
-        const DeviceIdentifier& device,
-        TCallback&& callback
-    ) {
-        auto visitor = std::forward<TCallback>(callback);
-        VisitDeviceStates(manager, device, visitor);
-    }
-
-    /// <summary>Visits each retained state value across all known remote devices.</summary>
-    template<std::size_t TMaximumDevices, typename TCallback>
-    static void ForEachRemoteState(
-        const RemoteStateManager<TContract, TMaximumDevices>& manager,
-        TCallback&& callback
-    ) {
-        auto visitor = std::forward<TCallback>(callback);
-        manager.ForEachDevice([&](const RemoteDeviceSnapshot& device) {
-            VisitDeviceStates(manager, device.Identifier, visitor);
-        });
-    }
-};
-
 }
 }
 
-#endif // ESPRESSIO_STATE_ENABLE_INTROSPECTION
+/// <summary>Performs a bounded read-only remote State lookup through the Runtime's static Type pack.</summary>
+/// <remarks>The Primitive directory remains metadata-only: this function statically dispatches over
+/// the Runtime's configured Types and copies only the retained last-known StateSnapshot into the
+/// caller's bounded serialized buffer. It exposes no SetByTypeId and no reachability/freshness verdict.</remarks>
+template<class... TConfigurations>
+StateDynamicRemoteReadResult ReadDynamicRemoteState(const Runtime<TConfigurations...>& runtime,
+                                                     StateTypeId typeId,
+                                                     const System::DeviceIdentifier& owner,
+                                                     StatePayloadFormat format,
+                                                     std::uint8_t* output,std::size_t capacity) {
+    if(!typeId || !owner) return {StateDynamicRemoteReadStatus::UnknownType};
+    StateDynamicRemoteReadResult result{StateDynamicRemoteReadStatus::UnknownType};
+    bool matched=false;
+    auto tryType=[&](auto configuration) {
+        using C=decltype(configuration);
+        using T=typename C::StateType;
+        if(!matched && T::TypeId==typeId) {
+            matched=true;
+            result=Detail::ReadDynamicRemoteType<T>(runtime,owner,format,output,capacity);
+        }
+    };
+    (tryType(TConfigurations{}),...);
+    return result;
+}
+
+} // namespace ESPressio::State
