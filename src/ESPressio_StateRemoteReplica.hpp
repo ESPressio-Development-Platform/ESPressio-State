@@ -55,6 +55,7 @@ struct StateSourceSubscriberSlot final {
     bool HasEstablishmentReply=false;
     bool HasPendingFirstBaseline=false;
     bool ResyncRequiredPending=false;
+    bool ControlContinuityLost=false;
     StateSnapshot<TState> ControlSnapshot{};
     StateResyncToken ResyncHighWater{};
 };
@@ -112,6 +113,20 @@ class StateRemoteReplicaTable final {
             if(slot.Occupied && slot.Requester.Device==device) return &slot;
         }
         return nullptr;
+    }
+    static bool BaselineContinuityLost(StateVersion baseline,StateVersion current) noexcept {
+        if constexpr(RequiresAcknowledgement) {
+            const auto relation=CompareStateVersion(baseline,current);
+            return relation==StateVersionRelation::Ambiguous || relation==StateVersionRelation::Older;
+        } else return baseline.Phase!=current.Phase;
+    }
+    static void PreserveControlContinuity(StateSourceSubscriberSlot<TState>& slot,StateVersion current) noexcept {
+        if(slot.HasOfferedBaseline && (slot.ControlContinuityLost ||
+           BaselineContinuityLost(slot.OfferedBaseline,current))) {
+            slot.SessionState=StateRemoteSessionState::ResyncRequired;
+            slot.ResyncRequiredPending=true;
+            slot.Dirty=false;
+        }
     }
 public:
     static constexpr std::size_t RemoteOwnerCapacity=RemoteOwners;
@@ -395,6 +410,7 @@ public:
                 StateStorageTraits<Value>::CopyOut(snapshot.Value,slot->ControlSnapshot.Value);
                 slot->ControlSnapshot.TruthTime=snapshot.TruthTime;
             }
+            slot->ControlContinuityLost=false;
             slot->HasEstablishmentReply=true;
         }
         hasValue=slot->HasOfferedBaseline;
@@ -436,6 +452,7 @@ public:
         slot->Dirty=bool(current) && (!slot->HasOfferedBaseline || current!=slot->OfferedBaseline);
         slot->LatestVersion=current;
         slot->SessionState=slot->HasOfferedBaseline?StateRemoteSessionState::ActiveTrusted:StateRemoteSessionState::ActiveNoBaseline;
+        PreserveControlContinuity(*slot,current);
         return StateRemoteStatus::Success;
     }
     StateRemoteStatus ActivateSubscriber(const System::DeviceRuntimeIdentity& requester,StateSessionToken session,bool hasBaseline,StateVersion baseline={}) noexcept {
@@ -454,17 +471,26 @@ public:
         for(auto& slot:_subscribers) {
             if(!slot.Occupied) continue;
             slot.LatestVersion=current;
+            if(slot.HasOfferedBaseline &&
+               (slot.SessionState==StateRemoteSessionState::Establishing ||
+                slot.SessionState==StateRemoteSessionState::AwaitingResync ||
+                (slot.SessionState==StateRemoteSessionState::ActiveNoBaseline && slot.HasPendingFirstBaseline))) {
+                slot.ControlContinuityLost=slot.ControlContinuityLost ||
+                    BaselineContinuityLost(slot.OfferedBaseline,current);
+                if constexpr(!RequiresAcknowledgement)
+                    slot.ControlContinuityLost=slot.ControlContinuityLost || current.Revision==0;
+            }
             if(slot.SessionState==StateRemoteSessionState::ResyncRequired) slot.ResyncRequiredPending=true;
             if(slot.SessionState!=StateRemoteSessionState::ActiveTrusted &&
                slot.SessionState!=StateRemoteSessionState::ActiveNoBaseline) continue;
-            bool mustResync=false;
+            bool mustResync=slot.HasPendingFirstBaseline && slot.ControlContinuityLost;
             if constexpr(RequiresAcknowledgement) {
                 if(slot.HasAcceptedBaseline) {
                     const auto relation=CompareStateVersion(slot.AcceptedBaseline,current);
-                    mustResync=relation==StateVersionRelation::Ambiguous || relation==StateVersionRelation::Older;
+                    mustResync=mustResync || relation==StateVersionRelation::Ambiguous || relation==StateVersionRelation::Older;
                 }
             } else {
-                mustResync=current.Revision==0;
+                mustResync=mustResync || current.Revision==0;
             }
             if(mustResync) {
                 slot.SessionState=StateRemoteSessionState::ResyncRequired;
@@ -540,6 +566,7 @@ public:
                 kind=StateMessageKind::BaselineSnapshot;
                 StateStorageTraits<Value>::CopyOut(snapshot.Value,slot.ControlSnapshot.Value);
                 slot.ControlSnapshot.TruthTime=snapshot.TruthTime;
+                slot.ControlContinuityLost=false;
                 slot.HasPendingFirstBaseline=true;
             } else if(slot.SessionState==StateRemoteSessionState::ActiveTrusted) kind=StateMessageKind::Publication;
             else continue;
@@ -593,6 +620,8 @@ public:
            slot->SessionState!=StateRemoteSessionState::ResyncRequired &&
            slot->SessionState!=StateRemoteSessionState::AwaitingResync) return StateRemoteStatus::Conflict;
         slot->Resync=token;
+        slot->ControlContinuityLost=false;
+        slot->HasPendingFirstBaseline=false;
         slot->OfferedBaseline=offered;
         slot->HasOfferedBaseline=true;
         slot->Dirty=false;
@@ -622,6 +651,8 @@ public:
         }
         slot->ResyncHighWater=token;
         slot->Resync=token;
+        slot->ControlContinuityLost=false;
+        slot->HasPendingFirstBaseline=false;
         slot->OfferedBaseline=version;
         StateStorageTraits<Value>::CopyOut(snapshot.Value,slot->ControlSnapshot.Value);
         slot->ControlSnapshot.TruthTime=snapshot.TruthTime;
@@ -645,6 +676,7 @@ public:
         slot->LatestVersion=current;
         slot->Dirty=current!=accepted;
         slot->SessionState=StateRemoteSessionState::ActiveTrusted;
+        PreserveControlContinuity(*slot,current);
         return StateRemoteStatus::Success;
     }
     std::size_t SubscribersInUse() const noexcept {

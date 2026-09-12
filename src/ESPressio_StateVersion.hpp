@@ -2,10 +2,15 @@
 #include <cstdint>
 namespace ESPressio::State {
 struct StateVersion final {
+    // Presence is independent of the 17-bit serial: phase 0/revision 0 is
+    // a valid fact after the second wrap. This flag is never serialized.
+    bool Present=false;
     bool Phase=false;
     std::uint16_t Revision=0;
-    constexpr explicit operator bool() const noexcept { return Revision!=0 || Phase; }
-    constexpr bool operator==(const StateVersion& other) const noexcept { return Phase==other.Phase && Revision==other.Revision; }
+    constexpr StateVersion() noexcept=default;
+    constexpr StateVersion(bool phase,std::uint16_t revision) noexcept : Present(true),Phase(phase),Revision(revision) {}
+    constexpr explicit operator bool() const noexcept { return Present; }
+    constexpr bool operator==(const StateVersion& other) const noexcept { return Present==other.Present && Phase==other.Phase && Revision==other.Revision; }
     constexpr bool operator!=(const StateVersion& other) const noexcept { return !(*this==other); }
 };
 enum class StateVersionRelation : std::uint8_t { Duplicate,Newer,Ambiguous,Older };

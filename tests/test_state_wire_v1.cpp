@@ -81,13 +81,31 @@ int main(){
     assert(S::DecodeStatePublicationHeader(badPublication.data(),badPublication.size(),decodedPublication).Status==S::StateWireStatus::UnsupportedProtocol);
     assert(S::DecodeStatePublicationHeader(pub.data(),S::StatePublicationWireHeaderSize,decodedPublication).Status==S::StateWireStatus::InvalidLength);
 
-    // Wrapped compact version phase=1/revision=0 is valid; only phase=0/revision=0 is empty/invalid.
+    // Both wrapped compact versions are valid; absence is internal and has no wire representation.
     auto wrapped=publication;wrapped.Version={true,0};wrapped.PayloadLength=0;
     std::array<std::uint8_t,S::StatePublicationWireHeaderSize> wrappedBytes{};
     assert(S::EncodeStatePublicationHeader(wrapped,wrappedBytes.data(),wrappedBytes.size()));
     S::StatePublicationWireHeader wrappedDecoded{};assert(S::DecodeStatePublicationHeader(wrappedBytes.data(),wrappedBytes.size(),wrappedDecoded));
     assert((wrappedDecoded.Version==S::StateVersion{true,0}));
-    wrapped.Version={false,0};assert(!S::EncodeStatePublicationHeader(wrapped,wrappedBytes.data(),wrappedBytes.size()));
+    wrapped.Version={false,0};assert(S::EncodeStatePublicationHeader(wrapped,wrappedBytes.data(),wrappedBytes.size()));
+    assert(S::DecodeStatePublicationHeader(wrappedBytes.data(),wrappedBytes.size(),wrappedDecoded));
+    assert(wrappedDecoded.Version && (wrappedDecoded.Version==S::StateVersion{false,0}));
+    wrapped.Version={};assert(!S::EncodeStatePublicationHeader(wrapped,wrappedBytes.data(),wrappedBytes.size()));
+
+    S::StateSnapshotControlWireHeader zeroSnapshot{{S::StateMessageKind::ResyncSnapshot,WireState::TypeId,
+        owner,requester,session,resync,0},{false,0},{1,Timing::TimeReliability::Synchronized},0};
+    std::array<std::uint8_t,S::StateSnapshotControlWireHeaderSize> zeroSnapshotBytes{};
+    assert(S::EncodeStateSnapshotControlHeader(zeroSnapshot,zeroSnapshotBytes.data(),zeroSnapshotBytes.size()));
+    S::StateSnapshotControlWireHeader zeroSnapshotDecoded{};
+    assert(S::DecodeStateSnapshotControlHeader(zeroSnapshotBytes.data(),zeroSnapshotBytes.size(),zeroSnapshotDecoded));
+    assert(zeroSnapshotDecoded.Version && (zeroSnapshotDecoded.Version==S::StateVersion{false,0}));
+    S::StateAcceptanceControlWireHeader zeroAccepted{{S::StateMessageKind::ResyncAccepted,WireState::TypeId,
+        owner,requester,session,resync,0},{false,0}};
+    std::array<std::uint8_t,S::StateAcceptanceControlWireHeaderSize> zeroAcceptedBytes{};
+    assert(S::EncodeStateAcceptanceControl(zeroAccepted,zeroAcceptedBytes.data(),zeroAcceptedBytes.size()));
+    S::StateAcceptanceControlWireHeader zeroAcceptedDecoded{};
+    assert(S::DecodeStateAcceptanceControl(zeroAcceptedBytes.data(),zeroAcceptedBytes.size(),zeroAcceptedDecoded));
+    assert(zeroAcceptedDecoded.Version && (zeroAcceptedDecoded.Version==S::StateVersion{false,0}));
 
     // SubscribeRequest is the sole canonical control allowed to carry an unknown owner runtime.
     auto unknownOwner=owner;unknownOwner.Incarnation=System::RuntimeIncarnationId{};

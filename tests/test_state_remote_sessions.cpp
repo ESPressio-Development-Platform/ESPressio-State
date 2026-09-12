@@ -158,6 +158,62 @@ int main(){
     assert(runtime.GetSourceSubscriberStatus<BestState>(bestRequester.Device)==S::StateRemoteSessionState::ResyncRequired);
     assert(!runtime.SourceSubscriberDirty<BestState>(bestRequester.Device));
 
+    // Continuity loss is sticky while a protected baseline awaits acceptance.
+    // A full compact cycle must not make a delayed ACK appear current again.
+    S::StateRemoteReplicaTable<AckState,0,1> delayed;
+    const S::StateSessionToken delayedSession{401};
+    assert(delayed.ReserveSubscriber(requester1,delayedSession)==S::StateRemoteStatus::Success);
+    bool hasValue=true;S::StateVersion offered{false,1};auto offeredSnapshot=AckSnapshot(1,1);
+    assert(delayed.PrepareSubscriberEstablishment(requester1,delayedSession,hasValue,offered,offeredSnapshot)==S::StateRemoteStatus::Success);
+    delayed.MarkLatestDirty({true,1});
+    delayed.MarkLatestDirty({false,1});
+    assert(delayed.AcceptSubscriberEstablishment(requester1,delayedSession,{false,1})==S::StateRemoteStatus::Success);
+    assert(delayed.SubscriberState(requester1.Device)==S::StateRemoteSessionState::ResyncRequired);
+    offered={false,2};offeredSnapshot=AckSnapshot(2,2);
+    assert(delayed.PrepareSubscriberResync(requester1,delayedSession,S::StateResyncToken{501},offered,offeredSnapshot)==S::StateRemoteStatus::Success);
+    delayed.MarkLatestDirty({true,2});
+    assert(delayed.AcceptSubscriberResync(requester1,delayedSession,S::StateResyncToken{501},{false,2},{true,2})==S::StateRemoteStatus::Success);
+    assert(delayed.SubscriberState(requester1.Device)==S::StateRemoteSessionState::ResyncRequired);
+    offered={true,2};offeredSnapshot=AckSnapshot(3,3);
+    assert(delayed.PrepareSubscriberResync(requester1,delayedSession,S::StateResyncToken{502},offered,offeredSnapshot)==S::StateRemoteStatus::Success);
+    assert(delayed.AcceptSubscriberResync(requester1,delayedSession,S::StateResyncToken{502},{true,2},{true,2})==S::StateRemoteStatus::Success);
+    assert(delayed.SubscriberState(requester1.Device)==S::StateRemoteSessionState::ActiveTrusted);
+
+    S::StateRemoteReplicaTable<AckState,0,1> delayedFirst;
+    assert(delayedFirst.ReserveSubscriber(requester1,delayedSession)==S::StateRemoteStatus::Success);
+    hasValue=false;offered={};
+    assert(delayedFirst.PrepareSubscriberEstablishment(requester1,delayedSession,hasValue,offered,offeredSnapshot)==S::StateRemoteStatus::Success);
+    assert(delayedFirst.AcceptSubscriberEstablishment(requester1,delayedSession,{})==S::StateRemoteStatus::Success);
+    delayedFirst.MarkLatestDirty({false,1});
+    S::StateSourceWork firstWork{};
+    assert(delayedFirst.TryPrepareLatest({false,1},offeredSnapshot,firstWork));
+    delayedFirst.MarkLatestDirty({true,1});
+    assert(delayedFirst.AcceptSubscriberBaseline(requester1,delayedSession,{false,1})==S::StateRemoteStatus::SessionMismatch);
+    assert(delayedFirst.SubscriberState(requester1.Device)==S::StateRemoteSessionState::ResyncRequired);
+
+    S::StateRemoteReplicaTable<BestState,0,1> delayedBest;
+    assert(delayedBest.ReserveSubscriber(requester1,delayedSession)==S::StateRemoteStatus::Success);
+    hasValue=true;offered={false,65535};
+    S::StateSnapshot<BestState> bestSnapshot{{1},{1,Timing::TimeReliability::Synchronized}};
+    assert(delayedBest.PrepareSubscriberEstablishment(requester1,delayedSession,hasValue,offered,bestSnapshot)==S::StateRemoteStatus::Success);
+    delayedBest.MarkLatestDirty({true,0});
+    delayedBest.MarkLatestDirty({true,1});
+    assert(delayedBest.AcceptSubscriberEstablishment(requester1,delayedSession,{true,1})==S::StateRemoteStatus::Success);
+    assert(delayedBest.SubscriberState(requester1.Device)==S::StateRemoteSessionState::ResyncRequired);
+
+    // Exercise the second wrap through the real owner and replica paths.
+    for(std::uint32_t value=65538;value<=131072;++value)
+        assert(ackOwner.Set({value},{value,Timing::TimeReliability::Synchronized})==S::StateSetStatus::Changed);
+    assert(runtime.Version<AckState>() && (runtime.Version<AckState>()==S::StateVersion{false,0}));
+    S::StateSnapshot<AckState> zeroFact{};
+    assert(runtime.TryRead<AckState>(zeroFact) && zeroFact.Value.Value==131072);
+    assert(ackOwner.Set({131072},{131073,Timing::TimeReliability::Synchronized})==S::StateSetStatus::NoChange);
+    S::StateRemoteReplicaTable<AckState,1,0> zeroReplica;
+    assert(zeroReplica.ReserveRemoteOwner(owner1.Device,delayedSession)==S::StateRemoteStatus::Success);
+    assert(zeroReplica.InstallSubscribeSnapshot(owner1,delayedSession,{false,0},zeroFact)==S::StateRemoteStatus::Success);
+    assert(zeroReplica.ApplyPublication(owner1,delayedSession,{false,0},zeroFact)==S::StateRemoteStatus::Duplicate);
+    assert(zeroReplica.ApplyPublication(owner1,delayedSession,{false,1},AckSnapshot(131073,131073))==S::StateRemoteStatus::Success);
+
     // Disjoint family Runtime compositions still share the current process's token namespace.
     // Neither a new Type pack nor another Runtime instance may restart session/resync numbering.
     Primitive::TypeDirectory<1> otherDirectory;

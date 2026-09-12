@@ -192,3 +192,25 @@ Canonical handoff Revision 106 records the completed document/current-state audi
 heads, provider gaps and working changes. Continue authorized work without checkpoint stops.
 Next: pending-handshake continuity invalidation, nonblocking ingress/lifetime, wake/campaigns,
 remote observation/tooling, legacy eradication, docs/resources and State final closure.
+
+
+## 2026-09-12T13:32:44.976724+00:00 — Delayed control continuity and second compact wrap
+
+Parent c75d6e380efc94e8363e1bcb28118e2e6fcd6c9e, tree
+8419ed3ce66b8ea8e554c2d1f58fe324c9c24051. CI 34696478084 has both host-contracts
+and esp32-typed-surface SUCCESS. First-baseline retention and source ResyncRequired opportunities
+are published and validated; finite worker pursuit remains pending.
+
+Current change latches continuity loss during initial/first-baseline/resync acceptance waits.
+Half-range loss and best-effort wrap cannot be undone by a delayed ACK, even when a full compact
+cycle makes the bits repeat. A fresh resync resets the control lineage. The initial delayed-ACK
+regression failed against the predecessor and passes after repair.
+
+StateVersion now distinguishes internal absence from the valid phase-0/revision-0 value reached
+after the second wrap. Presence is not serialized; all V1 sizes/offsets remain unchanged. The old
+wire test incorrectly prohibited that valid value and is corrected with publication, snapshot,
+and acceptance round trips. A real 131072-fact owner test, replica duplicate/next publication,
+and equal-value no-op cover the runtime boundary. The second-wrap regression failed before repair.
+Fourteen active host executables passed after the core changes; the expanded remote_sessions
+runtime wrap assertions are rebuilt separately before publication. This does not certify the
+remaining nonblocking/lifetime, wake/campaign, remote-observer/tooling or final State gates.
