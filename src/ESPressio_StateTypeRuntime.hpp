@@ -87,7 +87,7 @@ class StateTypeRuntime final {
         PublishObserversLocked();
         // Source convergence stores only a latest-truth dirty marker. It never copies one
         // TValue per subscriber and does not perform transport work while the commit lock is held.
-        if(_convergence) _convergence.MarkLatestDirty(_convergence.Owner);
+        if(_convergence) _convergence.MarkLatestDirty(_convergence.Owner,_version);
         return StateSetStatus::Changed;
     }
     friend class StateOwner<TState>;
