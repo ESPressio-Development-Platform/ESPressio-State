@@ -56,7 +56,7 @@ foreach(header IN LISTS STATE_PUBLIC_HEADERS)
 endforeach()
 
 enable_testing()
-foreach(name type_contract version local_runtime owner_runtime observer wire_v1 persistence remote_sessions remote_admission remote_runtime transport_binding subscriptions dynamic_read runtime_identity_projection shutdown initialization continuity_feedback convergence_feedback remote_tooling remote_observation comparison_policy)
+foreach(name type_contract version local_runtime owner_runtime observer wire_v1 persistence remote_sessions remote_admission remote_runtime transport_binding subscriptions dynamic_read runtime_identity_projection shutdown initialization continuity_feedback convergence_feedback remote_tooling remote_observation comparison_policy resources)
     add_executable(state_${name} test_state_${name}.cpp)
     target_include_directories(state_${name} PRIVATE ${STATE_INCLUDES})
     target_compile_options(state_${name} PRIVATE -Wall -Wextra -Werror -fno-rtti -UNDEBUG)
