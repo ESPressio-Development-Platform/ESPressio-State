@@ -2,6 +2,7 @@
 #include <type_traits>
 #include <ESPressio_TypeDirectory.hpp>
 #include "ESPressio_StateDescriptor.hpp"
+#include "ESPressio_StatePersistence.hpp"
 #include "ESPressio_StateRuntimeConfiguration.hpp"
 namespace ESPressio::State {
 namespace Detail {
@@ -42,6 +43,15 @@ public:
         auto owner=StateTypeRuntime<TState>::Get().BindOwner();
         if(!owner) _configurationError=true;
         return owner;
+    }
+    template<class TState,class Format>
+    StateRuntimeStatus BindPersistence(StatePersistenceBinding<TState,Format>& binding) noexcept {
+        using C=Detail::ConfigurationForT<TState,TConfigurations...>;
+        static_assert(!std::is_void_v<C>,"State Type is not configured in this Runtime");
+        if(_initialized) return StateRuntimeStatus::Frozen;
+        const auto status=StateTypeRuntime<TState>::Get().BindPersistence(binding.View());
+        if(status!=StateRuntimeStatus::Success) _configurationError=true;
+        return status;
     }
     StateRuntimeStatus Initialize(Primitive::TypeDirectoryView directory,Timing::QualifiedTime(*capture)()=nullptr) noexcept {
         if(_initialized) return StateRuntimeStatus::AlreadyInitialized;
