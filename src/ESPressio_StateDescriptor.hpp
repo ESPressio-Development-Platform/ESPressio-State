@@ -19,6 +19,21 @@ struct StateTypeResourceProfile final {
     std::size_t MaximumSnapshotControlWireBytes=0;
 };
 
+enum class StateDynamicReadStatus : std::uint8_t {
+    Success,
+    NoValue,
+    InsufficientOutput,
+    SerializationFailure,
+    UnsupportedFormat
+};
+struct StateDynamicReadResult final {
+    StateDynamicReadStatus Status=StateDynamicReadStatus::SerializationFailure;
+    std::size_t Bytes=0;
+    Timing::QualifiedTime TruthTime{};
+    constexpr explicit operator bool() const noexcept { return Status==StateDynamicReadStatus::Success; }
+};
+using StateDynamicReadThunk=StateDynamicReadResult (*)(std::uint8_t*,std::size_t);
+
 struct StateTypeDescriptor final {
     StateTypeId TypeId{};
     StateTier Tier=StateTier::Local;
@@ -31,6 +46,7 @@ struct StateTypeDescriptor final {
     std::array<std::size_t,3> MaximumSerializedValueBytes{};
     std::array<std::size_t,3> MaximumPublicationWireBytes{};
     std::array<std::size_t,3> MaximumSnapshotControlWireBytes{};
+    std::array<StateDynamicReadThunk,3> ReadValue{};
     StateTypeResourceProfile Resources{};
 };
 inline const StateTypeDescriptor* GetStateTypeDescriptor(const Primitive::PrimitiveTypeDescriptor& common) noexcept {
@@ -40,6 +56,18 @@ inline const StateTypeDescriptor* GetStateTypeDescriptor(const Primitive::Primit
 }
 
 template<class T> struct StateDescriptorProvider final {
+    template<class Format>
+    static StateDynamicReadResult ReadValue(std::uint8_t* output,std::size_t capacity) {
+        StateSnapshot<T> snapshot{};
+        if(!StateTypeRuntime<T>::Get().TryRead(snapshot)) return {StateDynamicReadStatus::NoValue,0,{}};
+        const auto encoded=Detail::SerializeStateValue<typename T::ValueType,Format>(snapshot.Value,output,capacity);
+        if(!encoded) {
+            return {capacity<Serializable::MaximumSerializedSize<typename T::ValueType,Format>
+                        ? StateDynamicReadStatus::InsufficientOutput
+                        : StateDynamicReadStatus::SerializationFailure,0,snapshot.TruthTime};
+        }
+        return {StateDynamicReadStatus::Success,encoded.Bytes,snapshot.TruthTime};
+    }
     static Primitive::PrimitiveTypeDescriptor Describe() noexcept {
         static_assert(Detail::ValidateLocalStateType<T>());
         static const StateTypeDescriptor extension=[] {
@@ -58,6 +86,8 @@ template<class T> struct StateDescriptorProvider final {
                     Serializable::MaximumSerializedSize<V,Serializable::DirectBinary>,
                     Serializable::MaximumSerializedSize<V,Serializable::CBOR>,
                     Serializable::MaximumSerializedSize<V,Serializable::JSON>};
+                value.ReadValue={&ReadValue<Serializable::DirectBinary>,&ReadValue<Serializable::CBOR>,
+                                 &ReadValue<Serializable::JSON>};
             }
             if constexpr(T::IsTransmissibleState){
                 static_assert(T::ValidateTier());
@@ -101,4 +131,12 @@ template<class T> struct StateDescriptorProvider final {
             {1,1},fingerprint.Finish(),{maximumWire},{&extension}};
     }
 };
+
+inline StateDynamicReadResult ReadDynamicState(const StateTypeDescriptor& descriptor,StatePayloadFormat format,
+                                               std::uint8_t* output,std::size_t capacity) {
+    const auto raw=static_cast<std::uint8_t>(format);
+    if(raw<1 || raw>3 || !descriptor.ReadValue[raw-1])
+        return {StateDynamicReadStatus::UnsupportedFormat,0,{}};
+    return descriptor.ReadValue[raw-1](output,capacity);
+}
 }

@@ -72,3 +72,27 @@ their scheduled replacement boundary; their presence grants no compatibility exc
 
 Adapters and RadioAdapters remain bootstrap-only. Subsequent tranches retain the original
 dependency order and completion gates. Only pushed commits count as recoverable progress.
+
+## 2026-09-12 handshake and P1 continuation
+
+Starting from validated published tip `e1acd06a7b63a62fb42fff84c1bc243d3baf2648`,
+this checkpoint adds the Type-specific family admission path for subscribe establishment,
+late first baseline, publications, exact acknowledgements, resynchronization and unsubscribe.
+Destination mutation precedes each protected reply. Duplicate baseline and resync snapshots
+are re-acknowledged, and the source keeps the newest truth dirty when it advances during an
+older transfer. `ServiceLatest` gives the adapter service context a bounded semantic-message
+seam and cannot clear a newer dirty version when an older offer completes.
+
+The checkpoint also adds P1 dynamic read dispatch for all three bounded serialization formats
+and the read-only `DeviceRuntimeIncarnationState`. Runtime initialization projects System's
+installed process incarnation with qualified time, version 1 and no public owner capability.
+
+Fourteen active host executables and all three expected compile-failure fixtures pass with GCC,
+C++17, `-Wall -Wextra -Werror -fno-rtti -UNDEBUG`. CI at the published exact head remains the
+authoritative host and ESP32 evidence.
+
+This is still not State tranche completion. The full architecture document read remains
+incomplete: original Revision 102 lines 1–3250 and Section 26 lines 10317–12164 are the only
+fully counted ranges. A later attempt to read lines 3251–5500 was truncated and is not counted.
+The exhaustive Section 0 source audit, adapter wake/continuity seam, finite campaigns,
+legacy replacement/eradication, documentation/examples/resources and final gates remain open.

@@ -8,6 +8,7 @@
 #include "ESPressio_State.hpp"
 #include "ESPressio_SerializableState.hpp"
 #include "ESPressio_TransmissibleState.hpp"
+#include "ESPressio_DeviceRuntimeIncarnationState.hpp"
 #include "ESPressio_StateWireV1.hpp"
 #include "ESPressio_StateRemoteAdmission.hpp"
 #include "ESPressio_StateTransportBinding.hpp"

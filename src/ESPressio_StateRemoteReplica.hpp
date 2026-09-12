@@ -10,6 +10,7 @@
 #include "ESPressio_StateRemoteSession.hpp"
 #include "ESPressio_StateSnapshot.hpp"
 #include "ESPressio_StateVersion.hpp"
+#include "ESPressio_StateWireV1.hpp"
 
 namespace ESPressio::State {
 
@@ -32,6 +33,8 @@ struct StateRemoteOwnerSlot final {
     StateSnapshot<TState> Snapshot{};
     bool HasValue=false;
     StateResyncToken Resync{};
+    StateResyncToken LastAcceptedResync{};
+    StateVersion LastAcceptedResyncVersion{};
 };
 
 template<class TState>
@@ -44,6 +47,16 @@ struct StateSourceSubscriberSlot final {
     bool HasAcceptedBaseline=false;
     bool Dirty=false;
     StateResyncToken Resync{};
+    StateVersion OfferedBaseline{};
+    bool HasOfferedBaseline=false;
+    StateVersion LatestVersion{};
+};
+
+struct StateSourceWork final {
+    System::DeviceRuntimeIdentity Requester{};
+    StateSessionToken Session{};
+    StateMessageKind Kind=StateMessageKind::Publication;
+    StateVersion Version{};
 };
 
 template<class TState>
@@ -127,7 +140,11 @@ public:
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         auto* slot=FindOwnerLocked(owner.Device);
         if(!slot) return StateRemoteStatus::NotFound;
-        if(slot->Session!=session || slot->SessionState!=StateRemoteSessionState::Establishing) return StateRemoteStatus::SessionMismatch;
+        if(slot->Session!=session) return StateRemoteStatus::SessionMismatch;
+        if(slot->SessionState==StateRemoteSessionState::ActiveTrusted && slot->Owner==owner &&
+           slot->Baseline==version && slot->HasValue && SnapshotExact(slot->Snapshot,snapshot))
+            return StateRemoteStatus::Duplicate;
+        if(slot->SessionState!=StateRemoteSessionState::Establishing) return StateRemoteStatus::SessionMismatch;
         slot->Owner=owner;
         slot->Baseline=version;
         slot->Snapshot=snapshot;
@@ -141,7 +158,10 @@ public:
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         auto* slot=FindOwnerLocked(owner.Device);
         if(!slot) return StateRemoteStatus::NotFound;
-        if(slot->Session!=session || slot->SessionState!=StateRemoteSessionState::Establishing) return StateRemoteStatus::SessionMismatch;
+        if(slot->Session!=session) return StateRemoteStatus::SessionMismatch;
+        if(slot->SessionState==StateRemoteSessionState::ActiveNoBaseline && slot->Owner==owner)
+            return StateRemoteStatus::Duplicate;
+        if(slot->SessionState!=StateRemoteSessionState::Establishing) return StateRemoteStatus::SessionMismatch;
         slot->Owner=owner;
         slot->Baseline={};
         slot->SessionState=StateRemoteSessionState::ActiveNoBaseline;
@@ -154,8 +174,11 @@ public:
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         auto* slot=FindOwnerLocked(owner.Device);
         if(!slot) return StateRemoteStatus::NotFound;
-        if(slot->Session!=session || slot->Owner!=owner || slot->SessionState!=StateRemoteSessionState::ActiveNoBaseline)
+        if(slot->Session!=session || slot->Owner!=owner)
             return StateRemoteStatus::SessionMismatch;
+        if(slot->SessionState==StateRemoteSessionState::ActiveTrusted && slot->Baseline==version &&
+           slot->HasValue && SnapshotExact(slot->Snapshot,snapshot)) return StateRemoteStatus::Duplicate;
+        if(slot->SessionState!=StateRemoteSessionState::ActiveNoBaseline) return StateRemoteStatus::SessionMismatch;
         slot->Snapshot=snapshot;
         slot->HasValue=true;
         slot->Baseline=version;
@@ -219,11 +242,18 @@ public:
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         auto* slot=FindOwnerLocked(owner.Device);
         if(!slot) return StateRemoteStatus::NotFound;
-        if(slot->Owner!=owner || slot->Session!=session || slot->SessionState!=StateRemoteSessionState::AwaitingResync || slot->Resync!=token)
+        if(slot->Owner!=owner || slot->Session!=session)
+            return StateRemoteStatus::SessionMismatch;
+        if(slot->SessionState==StateRemoteSessionState::ActiveTrusted && slot->LastAcceptedResync==token &&
+           slot->LastAcceptedResyncVersion==version && slot->Baseline==version && slot->HasValue &&
+           SnapshotExact(slot->Snapshot,snapshot)) return StateRemoteStatus::Duplicate;
+        if(slot->SessionState!=StateRemoteSessionState::AwaitingResync || slot->Resync!=token)
             return StateRemoteStatus::SessionMismatch;
         slot->Snapshot=snapshot;
         slot->HasValue=true;
         slot->Baseline=version;
+        slot->LastAcceptedResync=token;
+        slot->LastAcceptedResyncVersion=version;
         slot->Resync={};
         slot->SessionState=StateRemoteSessionState::ActiveTrusted;
         return StateRemoteStatus::Success;
@@ -266,6 +296,20 @@ public:
         slot->SessionState=StateRemoteSessionState::Inactive;
         return StateRemoteStatus::Success;
     }
+    StateRemoteStatus RejectSubscription(const System::DeviceIdentifier& owner,StateSessionToken expected) noexcept {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        auto* slot=FindOwnerLocked(owner);
+        if(!slot) return StateRemoteStatus::NotFound;
+        if(slot->Session!=expected || slot->SessionState!=StateRemoteSessionState::Establishing)
+            return StateRemoteStatus::SessionMismatch;
+        if(!slot->HasValue) *slot={};
+        else {
+            slot->Owner.Incarnation={};
+            slot->Session={};slot->Resync={};slot->Baseline={};
+            slot->SessionState=StateRemoteSessionState::Inactive;
+        }
+        return StateRemoteStatus::Success;
+    }
     /// <summary>Releases only an inactive retained replica; active sessions require explicit Unsubscribe.</summary>
     StateRemoteStatus ForgetRemote(const System::DeviceIdentifier& owner) noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
@@ -286,7 +330,10 @@ public:
         if(!requester || !session) return StateRemoteStatus::InvalidIdentity;
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         auto* slot=FindSubscriberLocked(requester.Device);
-        if(!slot) {
+        if(slot) {
+            if(slot->Requester==requester && slot->Session==session) return StateRemoteStatus::Duplicate;
+            if(slot->Requester.Incarnation.Value()>requester.Incarnation.Value()) return StateRemoteStatus::SessionMismatch;
+        } else {
             for(auto& candidate:_subscribers) {
                 if(!candidate.Occupied) { slot=&candidate; break; }
             }
@@ -297,6 +344,33 @@ public:
         slot->Requester=requester;
         slot->Session=session;
         slot->SessionState=StateRemoteSessionState::Establishing;
+        return StateRemoteStatus::Success;
+    }
+    StateRemoteStatus OfferSubscriberBaseline(const System::DeviceRuntimeIdentity& requester,StateSessionToken session,
+                                              bool hasBaseline,StateVersion baseline={}) noexcept {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        auto* slot=FindSubscriberLocked(requester.Device);
+        if(!slot) return StateRemoteStatus::NotFound;
+        if(slot->Requester!=requester || slot->Session!=session || slot->SessionState!=StateRemoteSessionState::Establishing)
+            return StateRemoteStatus::SessionMismatch;
+        slot->HasOfferedBaseline=hasBaseline;
+        slot->OfferedBaseline=hasBaseline?baseline:StateVersion{};
+        return StateRemoteStatus::Success;
+    }
+    StateRemoteStatus AcceptSubscriberEstablishment(const System::DeviceRuntimeIdentity& requester,StateSessionToken session,
+                                                    StateVersion current) noexcept {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        auto* slot=FindSubscriberLocked(requester.Device);
+        if(!slot) return StateRemoteStatus::NotFound;
+        if(slot->Requester!=requester || slot->Session!=session) return StateRemoteStatus::SessionMismatch;
+        if(slot->SessionState==StateRemoteSessionState::ActiveTrusted ||
+           slot->SessionState==StateRemoteSessionState::ActiveNoBaseline) return StateRemoteStatus::Duplicate;
+        if(slot->SessionState!=StateRemoteSessionState::Establishing) return StateRemoteStatus::Conflict;
+        slot->HasAcceptedBaseline=slot->HasOfferedBaseline;
+        slot->AcceptedBaseline=slot->HasOfferedBaseline?slot->OfferedBaseline:StateVersion{};
+        slot->Dirty=slot->HasOfferedBaseline && current!=slot->OfferedBaseline;
+        slot->LatestVersion=current;
+        slot->SessionState=slot->HasOfferedBaseline?StateRemoteSessionState::ActiveTrusted:StateRemoteSessionState::ActiveNoBaseline;
         return StateRemoteStatus::Success;
     }
     StateRemoteStatus ActivateSubscriber(const System::DeviceRuntimeIdentity& requester,StateSessionToken session,bool hasBaseline,StateVersion baseline={}) noexcept {
@@ -330,6 +404,7 @@ public:
                 slot.Resync={};
             } else {
                 slot.Dirty=true;
+                slot.LatestVersion=current;
             }
         }
     }
@@ -353,10 +428,48 @@ public:
         auto* slot=FindSubscriberLocked(requester.Device);
         if(!slot) return StateRemoteStatus::NotFound;
         if(slot->Requester!=requester || slot->Session!=session) return StateRemoteStatus::SessionMismatch;
+        if(slot->SessionState==StateRemoteSessionState::ActiveTrusted && slot->HasAcceptedBaseline &&
+           slot->AcceptedBaseline==version) {
+            slot->Dirty=bool(slot->LatestVersion) && slot->LatestVersion!=version;
+            return StateRemoteStatus::Success;
+        }
+        if(!slot->HasOfferedBaseline || slot->OfferedBaseline!=version) return StateRemoteStatus::SessionMismatch;
         slot->AcceptedBaseline=version;
         slot->HasAcceptedBaseline=true;
-        slot->Dirty=false;
+        slot->Dirty=bool(slot->LatestVersion) && slot->LatestVersion!=version;
         slot->SessionState=StateRemoteSessionState::ActiveTrusted;
+        return StateRemoteStatus::Success;
+    }
+    bool TryPrepareLatest(StateVersion current,StateSourceWork& output) noexcept {
+        if(!current) return false;
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        for(auto& slot:_subscribers) {
+            if(!slot.Occupied || !slot.Dirty) continue;
+            StateMessageKind kind{};
+            if(slot.SessionState==StateRemoteSessionState::ActiveNoBaseline) kind=StateMessageKind::BaselineSnapshot;
+            else if(slot.SessionState==StateRemoteSessionState::ActiveTrusted) kind=StateMessageKind::Publication;
+            else continue;
+            slot.OfferedBaseline=current;
+            slot.HasOfferedBaseline=true;
+            slot.LatestVersion=current;
+            output={slot.Requester,slot.Session,kind,current};
+            return true;
+        }
+        return false;
+    }
+    void CompleteLatestTransfer(const StateSourceWork& work,bool accepted) noexcept {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        auto* slot=FindSubscriberLocked(work.Requester.Device);
+        if(!slot || slot->Requester!=work.Requester || slot->Session!=work.Session ||
+           !slot->HasOfferedBaseline || slot->OfferedBaseline!=work.Version) return;
+        if(accepted && slot->LatestVersion==work.Version) slot->Dirty=false;
+    }
+    StateRemoteStatus RemoveSubscriber(const System::DeviceRuntimeIdentity& requester,StateSessionToken session) noexcept {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        auto* slot=FindSubscriberLocked(requester.Device);
+        if(!slot) return StateRemoteStatus::NotFound;
+        if(slot->Requester!=requester || slot->Session!=session) return StateRemoteStatus::SessionMismatch;
+        *slot={};
         return StateRemoteStatus::Success;
     }
     StateRemoteStatus RequireSubscriberResync(const System::DeviceIdentifier& requester) noexcept {
@@ -366,6 +479,39 @@ public:
         slot->SessionState=StateRemoteSessionState::ResyncRequired;
         slot->Dirty=false;
         slot->Resync={};
+        return StateRemoteStatus::Success;
+    }
+    StateRemoteStatus BeginSubscriberResync(const System::DeviceRuntimeIdentity& requester,StateSessionToken session,
+                                            StateResyncToken token,StateVersion offered) noexcept {
+        if(!token || !offered) return StateRemoteStatus::InvalidSession;
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        auto* slot=FindSubscriberLocked(requester.Device);
+        if(!slot) return StateRemoteStatus::NotFound;
+        if(slot->Requester!=requester || slot->Session!=session) return StateRemoteStatus::SessionMismatch;
+        if(slot->SessionState!=StateRemoteSessionState::ActiveTrusted &&
+           slot->SessionState!=StateRemoteSessionState::ActiveNoBaseline &&
+           slot->SessionState!=StateRemoteSessionState::ResyncRequired &&
+           slot->SessionState!=StateRemoteSessionState::AwaitingResync) return StateRemoteStatus::Conflict;
+        slot->Resync=token;
+        slot->OfferedBaseline=offered;
+        slot->HasOfferedBaseline=true;
+        slot->Dirty=false;
+        slot->SessionState=StateRemoteSessionState::AwaitingResync;
+        return StateRemoteStatus::Success;
+    }
+    StateRemoteStatus AcceptSubscriberResync(const System::DeviceRuntimeIdentity& requester,StateSessionToken session,
+                                             StateResyncToken token,StateVersion accepted,StateVersion current) noexcept {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        auto* slot=FindSubscriberLocked(requester.Device);
+        if(!slot) return StateRemoteStatus::NotFound;
+        if(slot->Requester!=requester || slot->Session!=session || slot->SessionState!=StateRemoteSessionState::AwaitingResync ||
+           slot->Resync!=token || !slot->HasOfferedBaseline || slot->OfferedBaseline!=accepted)
+            return StateRemoteStatus::SessionMismatch;
+        slot->Resync={};
+        slot->AcceptedBaseline=accepted;
+        slot->HasAcceptedBaseline=true;
+        slot->Dirty=current!=accepted;
+        slot->SessionState=StateRemoteSessionState::ActiveTrusted;
         return StateRemoteStatus::Success;
     }
     std::size_t SubscribersInUse() const noexcept {

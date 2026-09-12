@@ -79,5 +79,8 @@ template<class T,class=void> struct HasCanonicalName : std::false_type {};
 template<class T> struct HasCanonicalName<T,std::void_t<decltype(T::CanonicalName)>> : std::true_type {};
 template<class T,class=void> struct HasConvergencePolicy : std::false_type {};
 template<class T> struct HasConvergencePolicy<T,std::void_t<typename T::ConvergencePolicy>> : std::true_type {};
+template<class T,class=void> struct IsRuntimeIdentityProjection : std::false_type {};
+template<class T> struct IsRuntimeIdentityProjection<T,std::void_t<decltype(T::IsRuntimeIdentityProjection)>>
+    : std::bool_constant<T::IsRuntimeIdentityProjection> {};
 }
 }

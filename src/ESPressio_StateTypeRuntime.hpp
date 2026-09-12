@@ -201,6 +201,21 @@ public:
         }
         return StateRuntimeStatus::Success;
     }
+    StateRuntimeStatus InstallRuntimeIdentityProjection(const Value& value,Timing::QualifiedTime truthTime) noexcept {
+        static_assert(Detail::IsRuntimeIdentityProjection<TState>::value,
+                      "Only the standard runtime-identity State may use projection installation");
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        if(_phase.load(std::memory_order_relaxed)!=Phase::Prepared || _hasValue || _ownerEverBound || _persistence)
+            return StateRuntimeStatus::InvalidConfiguration;
+        Value prepared{};
+        if(!_storage.Prepare(value,prepared)) return StateRuntimeStatus::InvalidConfiguration;
+        _storage.CommitPrepared(prepared);
+        _truthTime=truthTime;
+        _version={false,1};
+        _hasValue=true;
+        _restoredDuringInitialize=true;
+        return StateRuntimeStatus::Success;
+    }
     StateRuntimeStatus Shutdown() noexcept {
         auto phase=_phase.load(std::memory_order_acquire);
         if(phase==Phase::Uninitialized || phase==Phase::Stopped) return StateRuntimeStatus::NotInitialized;
@@ -224,6 +239,14 @@ public:
         if(!_hasValue) return false;
         _storage.CopyOut(output.Value);
         output.TruthTime=_truthTime;
+        return true;
+    }
+    bool TryReadVersioned(StateSnapshot<TState>& output,StateVersion& version) const noexcept {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        if(!_hasValue) { version={};return false; }
+        _storage.CopyOut(output.Value);
+        output.TruthTime=_truthTime;
+        version=_version;
         return true;
     }
     StateTransportAdmission AdmitOutbound(const StateOutboundMessage<TState>& message) noexcept {
