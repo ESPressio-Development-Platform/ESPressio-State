@@ -24,6 +24,8 @@ jobs:
         with: {repository: ESPressio-Development-Platform/ESPressio-Timing, ref: primitives_redesign, path: deps/ESPressio-Timing}
       - uses: actions/checkout@v4
         with: {repository: ESPressio-Development-Platform/ESPressio-Serializable, ref: primitives_redesign, path: deps/ESPressio-Serializable}
+      - uses: actions/checkout@v4
+        with: {repository: ESPressio-Development-Platform/ESPressio-Persistence, ref: primitives_redesign, path: deps/ESPressio-Persistence}
       - name: Configure typed State contracts
         run: cmake -S tests -B build -DESPRESSIO_DEPENDENCIES="$GITHUB_WORKSPACE/deps"
       - name: Build typed State contracts
@@ -55,6 +57,7 @@ jobs:
               https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#primitives_redesign
               https://github.com/ESPressio-Development-Platform/ESPressio-Timing.git#primitives_redesign
               https://github.com/ESPressio-Development-Platform/ESPressio-Serializable.git#primitives_redesign
+              https://github.com/ESPressio-Development-Platform/ESPressio-Persistence.git#primitives_redesign
           build_unflags = -std=gnu++11 -frtti
           build_flags = -std=gnu++17 -fno-rtti
           PIO
