@@ -20,6 +20,11 @@ jobs:
         with: {repository: ESPressio-Development-Platform/ESPressio-Units, ref: primitives_redesign, path: deps/ESPressio-Units}
       - uses: actions/checkout@v4
         with: {repository: ESPressio-Development-Platform/ESPressio-Timing, ref: primitives_redesign, path: deps/ESPressio-Timing}
+      # Timing declares Observable for its SystemClock observer API. State does
+      # not: this checkout exists only because this raw host harness supplies
+      # transitive include directories instead of resolving package manifests.
+      - uses: actions/checkout@v4
+        with: {repository: ESPressio-Development-Platform/ESPressio-Observable, ref: primitives_redesign, path: deps/ESPressio-Observable}
       - uses: actions/checkout@v4
         with: {repository: ESPressio-Development-Platform/ESPressio-Serializable, ref: primitives_redesign, path: deps/ESPressio-Serializable}
       - uses: actions/checkout@v4

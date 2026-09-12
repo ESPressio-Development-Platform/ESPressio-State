@@ -8,6 +8,9 @@ set(STATE_INCLUDES ../src)
 foreach(dependency System Primitive Task Threads Units Timing Serializable Persistence)
     list(APPEND STATE_INCLUDES "${ESPRESSIO_DEPENDENCIES}/ESPressio-${dependency}/src")
 endforeach()
+# Timing still declares Observable for its SystemClock observer API. This is a
+# test-harness transitive include only; ESPressio-State itself does not depend on Observable.
+list(APPEND STATE_INCLUDES "${ESPRESSIO_DEPENDENCIES}/ESPressio-Observable/src")
 list(APPEND STATE_INCLUDES "${ESPRESSIO_DEPENDENCIES}/ESPressio-Timing/tests/stubs")
 
 # S5-20/S5-21 eradication guards. These predecessor surfaces are intentionally
@@ -63,6 +66,7 @@ set(NEGATIVE_INCLUDE_ARGS "-I${CMAKE_CURRENT_LIST_DIR}/../src")
 foreach(dependency System Primitive Task Threads Units Timing Serializable Persistence)
     list(APPEND NEGATIVE_INCLUDE_ARGS "-I${ESPRESSIO_DEPENDENCIES}/ESPressio-${dependency}/src")
 endforeach()
+list(APPEND NEGATIVE_INCLUDE_ARGS "-I${ESPRESSIO_DEPENDENCIES}/ESPressio-Observable/src")
 list(APPEND NEGATIVE_INCLUDE_ARGS "-I${ESPRESSIO_DEPENDENCIES}/ESPressio-Timing/tests/stubs")
 function(add_state_compile_failure name)
     add_test(NAME state_compile_fail_${name}
