@@ -269,6 +269,8 @@ int main(){
         RuntimeState::TypeId,local,remoteRequester,S::StateSessionToken{41},S::StateResyncToken{93},0},{false,3}};
     encoded=S::EncodeStateAcceptanceControl(sourceResyncAccepted,bytes.data(),bytes.size());assert(encoded);
     admitted=admit(bytes.data(),encoded.Bytes,{remoteRequester});assert(admitted);
+    admitted=admit(bytes.data(),encoded.Bytes,{remoteRequester});
+    assert(admitted.Disposition==Primitive::PrimitiveAdmissionDisposition::AlreadyAccepted);
     assert(runtime.SourceSubscriberDirty<RuntimeState>(remoteRequester.Device));
     assert(runtime.ServiceLatest<RuntimeState>());
     assert(adapter.Last.Kind==S::StateMessageKind::Publication && adapter.Last.Snapshot.Value.Value==13);
@@ -278,6 +280,10 @@ int main(){
     assert(admitted.Disposition==Primitive::PrimitiveAdmissionDisposition::Rejected);
 
     assert(runtime.RequireSourceResync<RuntimeState>(remoteRequester.Device)==S::StateRemoteStatus::Success);
+    encoded=S::EncodeStateAcceptanceControl(sourceResyncAccepted,bytes.data(),bytes.size());assert(encoded);
+    admitted=admit(bytes.data(),encoded.Bytes,{remoteRequester});
+    assert(admitted.Disposition==Primitive::PrimitiveAdmissionDisposition::AlreadyAccepted);
+    assert(runtime.GetSourceSubscriberStatus<RuntimeState>(remoteRequester.Device)==S::StateRemoteSessionState::ResyncRequired);
     adapter.Accept=false;
     assert(!runtime.ServiceLatest<RuntimeState>());
     assert(adapter.Last.Kind==S::StateMessageKind::ResyncRequired && !adapter.Last.HasSnapshot);

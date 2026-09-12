@@ -58,6 +58,8 @@ struct StateSourceSubscriberSlot final {
     bool ControlContinuityLost=false;
     StateSnapshot<TState> ControlSnapshot{};
     StateResyncToken ResyncHighWater{};
+    StateResyncToken LastAcceptedResync{};
+    StateVersion LastAcceptedResyncVersion{};
 };
 
 struct StateSourceWork final {
@@ -705,13 +707,20 @@ public:
     template<bool NonBlocking=false>
     StateRemoteStatus AcceptSubscriberResync(const System::DeviceRuntimeIdentity& requester,StateSessionToken session,
                                              StateResyncToken token,StateVersion accepted,StateVersion current) noexcept {
+        if(!token || !accepted) return StateRemoteStatus::InvalidSession;
         Detail::StateAdmissionLock<NonBlocking> lock(_mutex);
         if(!lock) return StateRemoteStatus::Busy;
         auto* slot=FindSubscriberLocked(requester.Device);
         if(!slot) return StateRemoteStatus::NotFound;
-        if(slot->Requester!=requester || slot->Session!=session || slot->SessionState!=StateRemoteSessionState::AwaitingResync ||
+        if(slot->Requester!=requester || slot->Session!=session) return StateRemoteStatus::SessionMismatch;
+        // A duplicate acceptance is evidence only for its original transaction;
+        // recognizing it must not restore trust lost after that transaction.
+        if(slot->LastAcceptedResync==token && slot->LastAcceptedResyncVersion==accepted) return StateRemoteStatus::Duplicate;
+        if(slot->SessionState!=StateRemoteSessionState::AwaitingResync ||
            slot->Resync!=token || !slot->HasOfferedBaseline || slot->OfferedBaseline!=accepted)
             return StateRemoteStatus::SessionMismatch;
+        slot->LastAcceptedResync=token;
+        slot->LastAcceptedResyncVersion=accepted;
         slot->Resync={};
         slot->AcceptedBaseline=accepted;
         slot->HasAcceptedBaseline=true;

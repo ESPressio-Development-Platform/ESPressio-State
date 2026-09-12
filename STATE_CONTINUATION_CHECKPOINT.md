@@ -299,3 +299,16 @@ Next: exact duplicate source resync acceptance, frozen wake/continuity seam and 
 finite convergence pursuit/exhaustion, remote observer/read tooling, legacy/resources/docs/final
 State closure. Keep semantic campaign state in State and adapter retry ownership on its locked
 side of the boundary; do not add per-Type Tasks or periodic anti-entropy polling.
+
+
+## 2026-09-12T14:02:45.996460+00:00 — Idempotent source resync acceptance
+
+Parent c94e9ecbe2c9c9de3a5d0e3c9a9bf018e4259db8, tree
+f6788a55b27f071b9a84706920c38f6406ae7049; CI 34697949834 host-contracts and
+esp32-typed-surface SUCCESS. Sixteen active host executables passed for that parent.
+This change retains one last accepted source resync token/version per subscriber. Exact repeated
+ResyncAccepted is AlreadyAccepted without mutation, including after subsequent continuity loss;
+it cannot restore trust or replace a newer transaction. The regression failed before repair.
+Focused remote_runtime, remote_sessions and subscriptions rebuilds pass. Remaining wake/campaign,
+remote observer/tooling, legacy/resources/docs/final gates stay open. Canonical living handoff
+Revision 110 records this work and must advance after publication/CI.
