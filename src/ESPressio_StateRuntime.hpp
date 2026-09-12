@@ -46,14 +46,16 @@ class Runtime final {
 
     template<class TState>
     auto& Table() noexcept {
-        static_assert(Detail::ConfigurationCount<TState,TConfigurations...>==1,"State Type must appear exactly once in Runtime configuration");
+        static_assert(Detail::ConfigurationCount<TState,TConfigurations...> == 1,
+                      "State Type must appear exactly once in Runtime configuration");
         using C=Detail::ConfigurationForT<TState,TConfigurations...>;
         using TableType=StateRemoteReplicaTable<TState,C::RemoteOwnerCapacity,C::SubscriberCapacity>;
         return std::get<TableType>(_remote);
     }
     template<class TState>
     const auto& Table() const noexcept {
-        static_assert(Detail::ConfigurationCount<TState,TConfigurations...>==1,"State Type must appear exactly once in Runtime configuration");
+        static_assert(Detail::ConfigurationCount<TState,TConfigurations...> == 1,
+                      "State Type must appear exactly once in Runtime configuration");
         using C=Detail::ConfigurationForT<TState,TConfigurations...>;
         using TableType=StateRemoteReplicaTable<TState,C::RemoteOwnerCapacity,C::SubscriberCapacity>;
         return std::get<TableType>(_remote);
@@ -76,7 +78,8 @@ class Runtime final {
     template<class C> static bool ValidateOne() noexcept { return StateTypeRuntime<typename C::StateType>::Get().ValidateStart(); }
 public:
     Runtime() noexcept=default;
-    Runtime(const Runtime&)=delete;Runtime& operator=(const Runtime&)=delete;
+    Runtime(const Runtime&)=delete;
+    Runtime& operator=(const Runtime&)=delete;
 
     template<class TState>
     StateOwner<TState> BindOwner() noexcept {
@@ -108,19 +111,22 @@ public:
         auto initialize=[&](auto tag){using C=decltype(tag);if(ok){status=InitializeOne<C>(directory,capture);ok=status==StateRuntimeStatus::Success;}};
         (initialize(TConfigurations{}),...);
         if(!ok){(RollbackOne<TConfigurations>(),...);return status;}
-        _initialized=true;return StateRuntimeStatus::Success;
+        _initialized=true;
+        return StateRuntimeStatus::Success;
     }
     StateRuntimeStatus Start() noexcept {
         if(!_initialized) return StateRuntimeStatus::NotInitialized;
         if(_running) return StateRuntimeStatus::Frozen;
         if(!(ValidateOne<TConfigurations>() && ...)) return StateRuntimeStatus::InvalidConfiguration;
         (StateTypeRuntime<typename TConfigurations::StateType>::Get().StartValidated(),...);
-        _running=true;return StateRuntimeStatus::Success;
+        _running=true;
+        return StateRuntimeStatus::Success;
     }
     StateRuntimeStatus Shutdown() noexcept {
         if(!_initialized) return StateRuntimeStatus::NotInitialized;
         (StateTypeRuntime<typename TConfigurations::StateType>::Get().Shutdown(),...);
-        _running=false;return StateRuntimeStatus::Success;
+        _running=false;
+        return StateRuntimeStatus::Success;
     }
 
     template<class TState> bool TryRead(StateSnapshot<TState>& output) const noexcept {
@@ -130,16 +136,20 @@ public:
     }
     template<class TState> StateVersion Version() const noexcept { return StateTypeRuntime<TState>::Get().Version(); }
     template<class TState> static constexpr std::size_t MaximumRemoteOwnersFor() noexcept {
-        using C=Detail::ConfigurationForT<TState,TConfigurations...>;static_assert(!std::is_void_v<C>);return C::RemoteOwnerCapacity;
+        using C=Detail::ConfigurationForT<TState,TConfigurations...>;
+        static_assert(!std::is_void_v<C>);
+        return C::RemoteOwnerCapacity;
     }
     template<class TState> static constexpr std::size_t MaximumSubscribersFor() noexcept {
-        using C=Detail::ConfigurationForT<TState,TConfigurations...>;static_assert(!std::is_void_v<C>);return C::SubscriberCapacity;
+        using C=Detail::ConfigurationForT<TState,TConfigurations...>;
+        static_assert(!std::is_void_v<C>);
+        return C::SubscriberCapacity;
     }
 
-    /// <summary>Reserves requester-side bounded session state; adapter emission is a separate family-binding step.</summary>
     template<class TState>
     StateSubscriptionResult ReserveSubscriptionSession(const System::DeviceIdentifier& owner) noexcept {
-        using C=Detail::ConfigurationForT<TState,TConfigurations...>;static_assert(!std::is_void_v<C> && TState::IsTransmissibleState);
+        using C=Detail::ConfigurationForT<TState,TConfigurations...>;
+        static_assert(!std::is_void_v<C> && TState::IsTransmissibleState);
         if(!_running) return {StateRemoteStatus::NotRunning,{}};
         StateSessionToken token{};
         {
