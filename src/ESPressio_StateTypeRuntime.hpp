@@ -69,24 +69,16 @@ class StateTypeRuntime final {
         if(_hasValue){
             Value current{};
             _storage.CopyOut(current);
-            // Equal State is a strict semantic no-op. Supplied TruthTime cannot refresh it,
-            // persistence is not rewritten and observers/convergence are not dirtied.
             if(StateComparison<TState>::Equals(current,prepared)) return StateSetStatus::NoChange;
         }
         const auto next=NextStateVersion(_version,_hasValue);
-        // Durable authority is established before RAM publication. A failed/ambiguous
-        // atomic replace consumes no compact version and exposes no observer/convergence change.
         if(_persistence && !_persistence.Commit(_persistence.Owner,prepared,truthTime))
             return StateSetStatus::PersistenceFailed;
         _storage.CommitPrepared(prepared);
         _truthTime=truthTime;
         _version=next;
         _hasValue=true;
-        // TH10 publication is metadata-only: target thunks set one pending bit and common Wake.
-        // No observer may read State or invoke application code from this producer path.
         PublishObserversLocked();
-        // Source convergence stores only a latest-truth dirty marker. It never copies one
-        // TValue per subscriber and does not perform transport work while the commit lock is held.
         if(_convergence) _convergence.MarkLatestDirty(_convergence.Owner,_version);
         return StateSetStatus::Changed;
     }
@@ -100,67 +92,53 @@ public:
     StateOwner<TState> BindOwner() noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         if(_phase.load(std::memory_order_relaxed)!=Phase::Uninitialized || _ownerEverBound) return {};
-        _ownerEverBound=true;_ownerAlive=true;
-        _ownerToken=1;
+        _ownerEverBound=true;_ownerAlive=true;_ownerToken=1;
         return StateOwner<TState>(this,_ownerToken);
     }
-
     StateRuntimeStatus BindPersistence(StatePersistenceBindingView<TState> binding) noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         if(_phase.load(std::memory_order_relaxed)!=Phase::Uninitialized) return StateRuntimeStatus::Frozen;
         if(_persistence || !binding) return StateRuntimeStatus::InvalidConfiguration;
-        _persistence=binding;
-        return StateRuntimeStatus::Success;
+        _persistence=binding;return StateRuntimeStatus::Success;
     }
     StateRuntimeStatus BindConvergence(StateConvergenceBindingView<TState> binding) noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         if(_phase.load(std::memory_order_relaxed)!=Phase::Uninitialized) return StateRuntimeStatus::Frozen;
-        if(_convergence || !binding) return StateRuntimeStatus::InvalidConfiguration;
-        _convergence=binding;
-        return StateRuntimeStatus::Success;
+        if(!binding) return StateRuntimeStatus::InvalidConfiguration;
+        if(_convergence)
+            return (_convergence.Owner==binding.Owner && _convergence.MarkLatestDirty==binding.MarkLatestDirty)
+                ? StateRuntimeStatus::Success : StateRuntimeStatus::InvalidConfiguration;
+        _convergence=binding;return StateRuntimeStatus::Success;
     }
 
-    /// <summary>Stages one fixed observer endpoint before the Type topology freezes.</summary>
     StateRuntimeStatus StageObserverTarget(StateObserverTargetNode& target) noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         const auto phase=_phase.load(std::memory_order_relaxed);
         if(phase==Phase::Running || phase==Phase::Stopping || phase==Phase::Stopped) return StateRuntimeStatus::Frozen;
         if(!target || target.Linked.load(std::memory_order_relaxed)) return StateRuntimeStatus::InvalidConfiguration;
-        target.Next=_observerTargets;
-        target.Linked.store(true,std::memory_order_release);
-        _observerTargets=&target;
+        target.Next=_observerTargets;target.Linked.store(true,std::memory_order_release);_observerTargets=&target;
         return StateRuntimeStatus::Success;
     }
     void RemoveObserverTarget(StateObserverTargetNode& target) noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         auto** current=&_observerTargets;
         while(*current){
-            if(*current==&target){
-                *current=target.Next;
-                target.Next=nullptr;
-                target.Linked.store(false,std::memory_order_release);
-                return;
-            }
+            if(*current==&target){*current=target.Next;target.Next=nullptr;target.Linked.store(false,std::memory_order_release);return;}
             current=&((*current)->Next);
         }
-        target.Linked.store(false,std::memory_order_release);
-        target.Next=nullptr;
+        target.Linked.store(false,std::memory_order_release);target.Next=nullptr;
     }
     bool ValidateStart() const noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         for(auto* target=_observerTargets;target;target=target->Next)
-            if(!target->Linked.load(std::memory_order_relaxed) || !target->Validate || !target->Validate(target->Owner))
-                return false;
+            if(!target->Linked.load(std::memory_order_relaxed) || !target->Validate || !target->Validate(target->Owner)) return false;
         return true;
     }
 
     StateRuntimeStatus Initialize(Timing::QualifiedTime(*captureTime)()=nullptr) noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         if(_phase.load(std::memory_order_relaxed)!=Phase::Uninitialized) return StateRuntimeStatus::AlreadyInitialized;
-        // P4 identity is required by Transmissible State and by persistent authoritative
-        // records, which are device-bound. Purely volatile Local/Serializable State remains local.
-        if((TState::IsTransmissibleState || bool(_persistence)) && !System::RuntimeIdentity::IsInstalled())
-            return StateRuntimeStatus::IdentityUnavailable;
+        if((TState::IsTransmissibleState || bool(_persistence)) && !System::RuntimeIdentity::IsInstalled()) return StateRuntimeStatus::IdentityUnavailable;
         if(_persistence){
             if(!_persistence.Validate(_persistence.Owner)) return StateRuntimeStatus::InvalidConfiguration;
             Value restored{};Timing::QualifiedTime restoredTruth{};bool restoredHasValue=false;
@@ -169,21 +147,13 @@ public:
             if(restoredHasValue){
                 Value prepared{};
                 if(!_storage.Prepare(restored,prepared)) return StateRuntimeStatus::PersistenceFailure;
-                _storage.CommitPrepared(prepared);
-                _truthTime=restoredTruth;
-                _version={false,1};
-                _hasValue=true;
-                _restoredDuringInitialize=true;
+                _storage.CommitPrepared(prepared);_truthTime=restoredTruth;_version={false,1};_hasValue=true;_restoredDuringInitialize=true;
             }
         }
         _captureTime=captureTime?captureTime:&CaptureSystemTime;
-        _phase.store(Phase::Prepared,std::memory_order_release);
-        return StateRuntimeStatus::Success;
+        _phase.store(Phase::Prepared,std::memory_order_release);return StateRuntimeStatus::Success;
     }
-    void StartValidated() noexcept {
-        _restoredDuringInitialize=false;
-        _phase.store(Phase::Running,std::memory_order_release);
-    }
+    void StartValidated() noexcept {_restoredDuringInitialize=false;_phase.store(Phase::Running,std::memory_order_release);}
     StateRuntimeStatus RollbackInitialization() noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         if(_phase.load(std::memory_order_relaxed)==Phase::Prepared){
@@ -196,9 +166,7 @@ public:
     StateRuntimeStatus Shutdown() noexcept {
         auto phase=_phase.load(std::memory_order_acquire);
         if(phase==Phase::Uninitialized || phase==Phase::Stopped) return StateRuntimeStatus::NotInitialized;
-        _phase.store(Phase::Stopping,std::memory_order_release);
-        _phase.store(Phase::Stopped,std::memory_order_release);
-        return StateRuntimeStatus::Success;
+        _phase.store(Phase::Stopping,std::memory_order_release);_phase.store(Phase::Stopped,std::memory_order_release);return StateRuntimeStatus::Success;
     }
     bool IsRunning() const noexcept { return _phase.load(std::memory_order_acquire)==Phase::Running; }
     bool HasValue() const noexcept { std::lock_guard<System::Synchronization::Mutex> lock(_mutex);return _hasValue; }
@@ -208,24 +176,18 @@ public:
     StateVersion Version() const noexcept { std::lock_guard<System::Synchronization::Mutex> lock(_mutex);return _version; }
     bool TryRead(StateSnapshot<TState>& output) const noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
-        if(!_hasValue) return false;
-        _storage.CopyOut(output.Value);output.TruthTime=_truthTime;return true;
+        if(!_hasValue) return false;_storage.CopyOut(output.Value);output.TruthTime=_truthTime;return true;
     }
 };
 
-template<class TState>
-void StateOwner<TState>::Release() noexcept {
-    auto* runtime=std::exchange(_runtime,nullptr);const auto token=std::exchange(_token,0);
-    if(runtime) runtime->ReleaseOwner(token);
+template<class TState> void StateOwner<TState>::Release() noexcept {
+    auto* runtime=std::exchange(_runtime,nullptr);const auto token=std::exchange(_token,0);if(runtime) runtime->ReleaseOwner(token);
 }
-template<class TState>
-StateSetStatus StateOwner<TState>::Set(const typename TState::ValueType& candidate){
+template<class TState> StateSetStatus StateOwner<TState>::Set(const typename TState::ValueType& candidate){
     if(!_runtime || !_token) return StateSetStatus::OwnerUnavailable;
-    const auto truth=_runtime->_captureTime ? _runtime->_captureTime() : Timing::QualifiedTime{};
-    return _runtime->Set(_token,candidate,truth);
+    const auto truth=_runtime->_captureTime ? _runtime->_captureTime() : Timing::QualifiedTime{};return _runtime->Set(_token,candidate,truth);
 }
-template<class TState>
-StateSetStatus StateOwner<TState>::Set(const typename TState::ValueType& candidate,Timing::QualifiedTime truthTime){
+template<class TState> StateSetStatus StateOwner<TState>::Set(const typename TState::ValueType& candidate,Timing::QualifiedTime truthTime){
     return (!_runtime || !_token) ? StateSetStatus::OwnerUnavailable : _runtime->Set(_token,candidate,truthTime);
 }
 }
