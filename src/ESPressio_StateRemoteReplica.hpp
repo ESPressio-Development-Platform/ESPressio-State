@@ -5,6 +5,7 @@
 #include <mutex>
 #include <type_traits>
 #include <ESPressio_DeviceRuntimeIdentity.hpp>
+#include <ESPressio_PrimitivePolicy.hpp>
 #include <ESPressio_Synchronization.hpp>
 #include "ESPressio_StateRemoteSession.hpp"
 #include "ESPressio_StateSnapshot.hpp"
@@ -48,7 +49,7 @@ struct StateSourceSubscriberSlot final {
 template<class TState>
 struct StateConvergenceBindingView final {
     void* Owner=nullptr;
-    void (*MarkLatestDirty)(void*) noexcept=nullptr;
+    void (*MarkLatestDirty)(void*,StateVersion) noexcept=nullptr;
     constexpr explicit operator bool() const noexcept { return Owner && MarkLatestDirty; }
 };
 
@@ -76,9 +77,17 @@ class StateRemoteReplicaTable final {
     StateSourceSubscriberSlot<TState>* FindSubscriberLocked(const System::DeviceIdentifier& device) noexcept {
         for(auto& slot:_subscribers) if(slot.Occupied && slot.Requester.Device==device) return &slot;return nullptr;
     }
+    const StateSourceSubscriberSlot<TState>* FindSubscriberLocked(const System::DeviceIdentifier& device) const noexcept {
+        for(const auto& slot:_subscribers) if(slot.Occupied && slot.Requester.Device==device) return &slot;return nullptr;
+    }
 public:
     static constexpr std::size_t RemoteOwnerCapacity=RemoteOwners;
     static constexpr std::size_t SubscriberCapacity=Subscribers;
+    static constexpr bool RequiresAcknowledgement=[] {
+        if constexpr(TState::IsTransmissibleState)
+            return std::is_same_v<typename TState::ConvergencePolicy::RequiredEvidence,Primitive::DestinationPrimitiveAdmission>;
+        else return false;
+    }();
 
     StateRemoteStatus ReserveRemoteOwner(const System::DeviceIdentifier& device,StateSessionToken session) noexcept {
         if(!device || !session) return StateRemoteStatus::InvalidSession;
@@ -209,17 +218,38 @@ public:
         auto* slot=FindSubscriberLocked(requester.Device);if(!slot) return StateRemoteStatus::NotFound;
         if(slot->Requester!=requester || slot->Session!=session) return StateRemoteStatus::SessionMismatch;
         slot->HasAcceptedBaseline=hasBaseline;slot->AcceptedBaseline=hasBaseline?baseline:StateVersion{};
-        slot->SessionState=hasBaseline?StateRemoteSessionState::ActiveTrusted:StateRemoteSessionState::ActiveNoBaseline;return StateRemoteStatus::Success;
+        slot->Dirty=false;slot->SessionState=hasBaseline?StateRemoteSessionState::ActiveTrusted:StateRemoteSessionState::ActiveNoBaseline;return StateRemoteStatus::Success;
     }
-    void MarkLatestDirty() noexcept {
+    void MarkLatestDirty(StateVersion current) noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
-        for(auto& slot:_subscribers)
-            if(slot.Occupied && (slot.SessionState==StateRemoteSessionState::ActiveTrusted || slot.SessionState==StateRemoteSessionState::ActiveNoBaseline))
-                slot.Dirty=true;
+        for(auto& slot:_subscribers){
+            if(!slot.Occupied || (slot.SessionState!=StateRemoteSessionState::ActiveTrusted && slot.SessionState!=StateRemoteSessionState::ActiveNoBaseline)) continue;
+            bool mustResync=false;
+            if constexpr(RequiresAcknowledgement){
+                if(slot.HasAcceptedBaseline){
+                    const auto relation=CompareStateVersion(slot.AcceptedBaseline,current);
+                    mustResync=relation==StateVersionRelation::Ambiguous || relation==StateVersionRelation::Older;
+                }
+            } else {
+                // Best-effort has no remote accepted baseline after the handshake. Every local
+                // uint16 wrap is therefore an explicit convergence boundary before ordinary publication continues.
+                mustResync=current.Revision==0;
+            }
+            if(mustResync){slot.SessionState=StateRemoteSessionState::ResyncRequired;slot.Dirty=false;slot.Resync={};}
+            else slot.Dirty=true;
+        }
     }
     bool SubscriberDirty(const System::DeviceIdentifier& requester) const noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
-        for(const auto& slot:_subscribers) if(slot.Occupied && slot.Requester.Device==requester) return slot.Dirty;return false;
+        const auto* slot=FindSubscriberLocked(requester);return slot?slot->Dirty:false;
+    }
+    StateRemoteSessionState SubscriberState(const System::DeviceIdentifier& requester) const noexcept {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        const auto* slot=FindSubscriberLocked(requester);return slot?slot->SessionState:StateRemoteSessionState::Inactive;
+    }
+    StateVersion SubscriberAcceptedBaseline(const System::DeviceIdentifier& requester) const noexcept {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        const auto* slot=FindSubscriberLocked(requester);return slot?slot->AcceptedBaseline:StateVersion{};
     }
     StateRemoteStatus AcceptSubscriberBaseline(const System::DeviceRuntimeIdentity& requester,StateSessionToken session,StateVersion version) noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
@@ -231,13 +261,13 @@ public:
     StateRemoteStatus RequireSubscriberResync(const System::DeviceIdentifier& requester) noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         auto* slot=FindSubscriberLocked(requester);if(!slot) return StateRemoteStatus::NotFound;
-        slot->SessionState=StateRemoteSessionState::ResyncRequired;slot->Resync={};return StateRemoteStatus::Success;
+        slot->SessionState=StateRemoteSessionState::ResyncRequired;slot->Dirty=false;slot->Resync={};return StateRemoteStatus::Success;
     }
     std::size_t SubscribersInUse() const noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);std::size_t count=0;for(const auto& s:_subscribers)count+=s.Occupied?1:0;return count;
     }
     StateConvergenceBindingView<TState> ConvergenceView() noexcept {
-        return {this,[](void* p) noexcept{static_cast<StateRemoteReplicaTable*>(p)->MarkLatestDirty();}};
+        return {this,[](void* p,StateVersion version) noexcept{static_cast<StateRemoteReplicaTable*>(p)->MarkLatestDirty(version);}};
     }
 };
 
