@@ -246,10 +246,16 @@ public:
         const auto* slot=FindOwnerLocked(owner);
         return slot?slot->Baseline:StateVersion{};
     }
-    StateRemoteStatus Unsubscribe(const System::DeviceIdentifier& owner,StateReplicaRelease disposition) noexcept {
+    /// <summary>Closes a session and optionally copies its learned owner identity under the same lock.</summary>
+    /// <remarks>A supplied token must match before any mutation, preventing an old handle from closing
+    /// a replacement session. The identity copy permits notification after ReleaseReplica erases storage.</remarks>
+    StateRemoteStatus Unsubscribe(const System::DeviceIdentifier& owner,StateReplicaRelease disposition,
+                                  StateSessionToken expected={},System::DeviceRuntimeIdentity* closedOwner=nullptr) noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         auto* slot=FindOwnerLocked(owner);
         if(!slot) return StateRemoteStatus::NotFound;
+        if(expected && slot->Session!=expected) return StateRemoteStatus::SessionMismatch;
+        if(closedOwner) *closedOwner=slot->Owner;
         if(disposition==StateReplicaRelease::ReleaseReplica) {
             *slot={};
             return StateRemoteStatus::Success;
@@ -260,10 +266,12 @@ public:
         slot->SessionState=StateRemoteSessionState::Inactive;
         return StateRemoteStatus::Success;
     }
+    /// <summary>Releases only an inactive retained replica; active sessions require explicit Unsubscribe.</summary>
     StateRemoteStatus ForgetRemote(const System::DeviceIdentifier& owner) noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         auto* slot=FindOwnerLocked(owner);
         if(!slot) return StateRemoteStatus::NotFound;
+        if(slot->SessionState!=StateRemoteSessionState::Inactive || slot->Session) return StateRemoteStatus::Conflict;
         *slot={};
         return StateRemoteStatus::Success;
     }

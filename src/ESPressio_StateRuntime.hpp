@@ -70,8 +70,9 @@ struct StateOwnerDiscoveryBuffer final {
     std::size_t Count=0;
     static bool Offer(void* context,const System::DeviceIdentifier& owner) noexcept {
         auto& self=*static_cast<StateOwnerDiscoveryBuffer*>(context);
-        if(!owner || self.Count==Capacity) return false;
+        if(!owner) return false;
         for(std::size_t i=0;i<self.Count;++i) if(self.Owners[i]==owner) return true;
+        if(self.Count==Capacity) return false;
         self.Owners[self.Count++]=owner;
         return true;
     }
@@ -92,8 +93,6 @@ class Runtime final {
     RemoteTables _remote{};
     SelectorStates _selectors{};
     mutable System::Synchronization::Mutex _tokenMutex;
-    StateSessionTokenGenerator _sessionTokens{};
-    StateResyncTokenGenerator _resyncTokens{};
 
     template<class TState>
     auto& Table() noexcept {
@@ -184,7 +183,7 @@ class Runtime final {
                 if(selector.Mode!=StateSubscriptionSelectorMode::AnyDevice) return {StateRemoteStatus::Conflict,{}};
             }
             ++selector.InFlight;
-            if(!_sessionTokens.TryAllocate(token)) {
+            if(!Detail::StateProcessTokenAuthority::TryAllocate(token)) {
                 --selector.InFlight;
                 if(resetSpecificOnFailure && selector.Count==0 && selector.InFlight==0) selector.Mode=StateSubscriptionSelectorMode::None;
                 return {StateRemoteStatus::TokenExhausted,{}};
@@ -209,8 +208,8 @@ class Runtime final {
         request.Session=token;
         const auto admitted=StateTypeRuntime<TState>::Get().AdmitOutbound(request);
         if(!admitted) {
-            if(hadRetained) (void)Table<TState>().Unsubscribe(owner,StateReplicaRelease::RetainLastKnown);
-            else (void)Table<TState>().ForgetRemote(owner);
+            (void)Table<TState>().Unsubscribe(owner,hadRetained ? StateReplicaRelease::RetainLastKnown
+                                                             : StateReplicaRelease::ReleaseReplica);
             std::lock_guard<System::Synchronization::Mutex> lock(_tokenMutex);
             auto& selector=Selector<TState>();
             --selector.InFlight;
@@ -265,6 +264,7 @@ public:
         if(_initialized) return StateRuntimeStatus::AlreadyInitialized;
         if(_configurationError) return StateRuntimeStatus::InvalidConfiguration;
         if(!directory.IsFrozen()) return StateRuntimeStatus::InvalidDirectory;
+        Detail::StateProcessTokenAuthority::Initialize();
         StateRuntimeStatus status=StateRuntimeStatus::Success;
         bool ok=true;
         auto bind=[&](auto tag){using C=decltype(tag);if(ok){status=BindConvergenceOne<C>();ok=status==StateRuntimeStatus::Success;}};
@@ -316,7 +316,7 @@ public:
         StateSessionToken token{};
         {
             std::lock_guard<System::Synchronization::Mutex> lock(_tokenMutex);
-            if(!_sessionTokens.TryAllocate(token)) return {StateRemoteStatus::TokenExhausted,{}};
+            if(!Detail::StateProcessTokenAuthority::TryAllocate(token)) return {StateRemoteStatus::TokenExhausted,{}};
         }
         const auto status=Table<TState>().ReserveRemoteOwner(owner,token);
         if(status!=StateRemoteStatus::Success) return {status,{}};
@@ -382,31 +382,38 @@ public:
         return StartConcreteSubscription<TState>(owner,StateSubscriptionSelectorMode::AnyDevice);
     }
 
+    /// <summary>Closes local admission before attempting the bounded remote Unsubscribe notification.</summary>
+    /// <remarks>Success denotes local closure. Adapter backpressure cannot keep this session active;
+    /// lost remote notification is reclaimed by the source's bounded continuity/replacement rules.</remarks>
     template<class TState>
     StateRemoteStatus Unsubscribe(const StateSubscriptionHandle& handle,StateReplicaRelease disposition) noexcept {
         if(!_running) return StateRemoteStatus::NotRunning;
         if(handle.TypeId!=TState::TypeId || !handle) return StateRemoteStatus::InvalidSession;
-        {
-            std::lock_guard<System::Synchronization::Mutex> lock(_tokenMutex);
-            if(!Selector<TState>().Contains(handle)) return StateRemoteStatus::SessionMismatch;
-        }
         System::DeviceRuntimeIdentity requester{};
         if(!System::RuntimeIdentity::TryRead(requester)) return StateRemoteStatus::InvalidIdentity;
-        StateOutboundMessage<TState> request{};
-        request.Kind=StateMessageKind::UnsubscribeRequest;
-        request.Owner={handle.OwnerDevice,{}};
-        request.Requester=requester;
-        request.Session=handle.Session;
-        const auto admitted=StateTypeRuntime<TState>::Get().AdmitOutbound(request);
-        if(!admitted) return MapTransport(admitted.Status);
-        const auto status=Table<TState>().Unsubscribe(handle.OwnerDevice,disposition);
-        if(status!=StateRemoteStatus::Success) return status;
+        System::DeviceRuntimeIdentity closedOwner{};
         {
+            // Hold selector ownership through replica closure: an old handle must never close a
+            // replacement session admitted for the same owner while this operation is in flight.
             std::lock_guard<System::Synchronization::Mutex> lock(_tokenMutex);
             auto& selector=Selector<TState>();
-            if(!selector.Remove(handle)) return StateRemoteStatus::SessionMismatch;
+            if(!selector.Contains(handle)) return StateRemoteStatus::SessionMismatch;
+            const auto status=Table<TState>().Unsubscribe(handle.OwnerDevice,disposition,handle.Session,&closedOwner);
+            if(status!=StateRemoteStatus::Success) return status;
+            (void)selector.Remove(handle);
             if(selector.Count==0 && selector.InFlight==0) selector.Mode=StateSubscriptionSelectorMode::None;
         }
+        // Before a baseline reply, the current owner incarnation is unknown. Closing locally is
+        // still required, but no invalid zero-incarnation Unsubscribe is offered to the V1 codec.
+        if(!closedOwner) return StateRemoteStatus::Success;
+        StateOutboundMessage<TState> request{};
+        request.Kind=StateMessageKind::UnsubscribeRequest;
+        request.Owner=closedOwner;
+        request.Requester=requester;
+        request.Session=handle.Session;
+        // The adapter borrows only the old immutable session identity, outside local locks.
+        // Its admission result is not permission to restore local subscription authority.
+        (void)StateTypeRuntime<TState>::Get().AdmitOutbound(request);
         return StateRemoteStatus::Success;
     }
 
@@ -427,7 +434,7 @@ public:
 
     StateRemoteStatus AllocateResyncToken(StateResyncToken& output) noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_tokenMutex);
-        return _resyncTokens.TryAllocate(output)?StateRemoteStatus::Success:StateRemoteStatus::TokenExhausted;
+        return Detail::StateProcessTokenAuthority::TryAllocate(output)?StateRemoteStatus::Success:StateRemoteStatus::TokenExhausted;
     }
 
     template<class TState> StateRemoteStatus InstallSubscribeSnapshot(const System::DeviceRuntimeIdentity& owner,StateSessionToken session,

@@ -51,9 +51,12 @@ struct Adapter final {
     std::size_t DiscoveryCount=0;
     std::array<S::StateOutboundMessage<TState>,16> Messages{};
     std::size_t MessageCount=0;
+    void* ProbeContext=nullptr;
+    void (*Probe)(void*,const S::StateOutboundMessage<TState>&)=nullptr;
 
     bool Validate(const S::StateTransportContract&) noexcept { return true; }
     S::StateTransportAdmission Admit(const S::StateOutboundMessage<TState>& message) noexcept {
+        if(Probe) Probe(ProbeContext,message);
         if(RejectNext){RejectNext=false;return {S::StateTransportAdmissionStatus::CapacityUnavailable};}
         assert(MessageCount<Messages.size());Messages[MessageCount++]=message;
         return {S::StateTransportAdmissionStatus::Accepted};
@@ -154,6 +157,49 @@ int main(){
     const auto afterOverflow=runtime.SubscribeFrom<AnyState>(Identity(0x40,40).Device);
     assert(afterOverflow && afterOverflow.Handle.Session.Value()==7); // discovery itself allocates no session tokens.
     assert(runtime.Unsubscribe<AnyState>(afterOverflow.Handle,S::StateReplicaRelease::ReleaseReplica)==S::StateRemoteStatus::Success);
+
+    // Local closure precedes adapter admission, even when the remote notification is rejected.
+    const auto closing=runtime.SubscribeFrom<AnyState>(deviceA.Device);
+    assert(closing);
+    const S::StateSnapshot<AnyState> closingSnapshot{{88},{888,Timing::TimeReliability::Holdover}};
+    assert(runtime.InstallSubscribeSnapshot<AnyState>(deviceA,closing.Handle.Session,{false,1},closingSnapshot)==S::StateRemoteStatus::Success);
+    struct ClosureProbe { Runtime* RuntimeOwner; System::DeviceRuntimeIdentity Owner; bool Called=false; } probe{&runtime,deviceA};
+    anyAdapter.ProbeContext=&probe;
+    anyAdapter.Probe=[](void* context,const S::StateOutboundMessage<AnyState>& message){
+        if(message.Kind!=S::StateMessageKind::UnsubscribeRequest) return;
+        auto& check=*static_cast<ClosureProbe*>(context);
+        assert(message.Owner==check.Owner);
+        assert(check.RuntimeOwner->GetRemoteSessionStatus<AnyState>(check.Owner.Device)==S::StateRemoteSessionState::Inactive);
+        assert(check.RuntimeOwner->SubscriptionSelectorMode<AnyState>()==S::StateSubscriptionSelectorMode::None);
+        const S::StateSnapshot<AnyState> late{{99},{999,Timing::TimeReliability::Synchronized}};
+        assert(check.RuntimeOwner->ApplyRemotePublication<AnyState>(check.Owner,message.Session,{false,2},late)==S::StateRemoteStatus::SessionMismatch);
+        check.Called=true;
+    };
+    anyAdapter.RejectNext=true;
+    assert(runtime.Unsubscribe<AnyState>(closing.Handle,S::StateReplicaRelease::RetainLastKnown)==S::StateRemoteStatus::Success);
+    assert(probe.Called);
+    S::StateSnapshot<AnyState> closedRead{};
+    assert(runtime.TryReadRemote<AnyState>(deviceA.Device,closedRead) && closedRead.Value.Value==88);
+    assert(closedRead.TruthTime.Nanoseconds==888 && closedRead.TruthTime.Reliability==Timing::TimeReliability::Holdover);
+    anyAdapter.Probe=nullptr;
+
+    // A stale handle cannot close a replacement session for the same owner.
+    const auto replacement=runtime.SubscribeFrom<AnyState>(deviceA.Device);
+    assert(replacement && replacement.Handle.Session!=closing.Handle.Session);
+    assert(runtime.Unsubscribe<AnyState>(closing.Handle,S::StateReplicaRelease::ReleaseReplica)==S::StateRemoteStatus::SessionMismatch);
+    assert(runtime.GetRemoteSessionStatus<AnyState>(deviceA.Device)==S::StateRemoteSessionState::Establishing);
+    assert(runtime.InstallSubscribeSnapshot<AnyState>(deviceA,replacement.Handle.Session,{false,2},closingSnapshot)==S::StateRemoteStatus::Success);
+    anyAdapter.RejectNext=true;
+    assert(runtime.Unsubscribe<AnyState>(replacement.Handle,S::StateReplicaRelease::ReleaseReplica)==S::StateRemoteStatus::Success);
+    assert(!runtime.TryReadRemote<AnyState>(deviceA.Device,closedRead));
+
+    // Repeated discovery of an existing owner consumes no capacity, including at the exact limit.
+    anyAdapter.Discovered[2]=anyAdapter.Discovered[0];
+    anyAdapter.DiscoveryCount=3;
+    const auto deduplicated=runtime.SubscribeAny<AnyState>();
+    assert(deduplicated && deduplicated.SessionCount==2);
+    for(std::size_t i=0;i<deduplicated.SessionCount;++i)
+        assert(runtime.Unsubscribe<AnyState>(deduplicated.Sessions[i],S::StateReplicaRelease::ReleaseReplica)==S::StateRemoteStatus::Success);
 
     assert(runtime.Shutdown()==S::StateRuntimeStatus::Success);
 }

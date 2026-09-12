@@ -47,6 +47,11 @@ struct BestState final : S::TransmissibleState<BestState,RemoteValue> {
     static constexpr std::string_view CanonicalName="Test.State.BestEffort";
     using ConvergencePolicy=BestEffortPolicy;
 };
+struct OtherRuntimeState final : S::TransmissibleState<OtherRuntimeState,RemoteValue> {
+    static constexpr S::StateTypeId TypeId{0x5203};
+    static constexpr std::string_view CanonicalName="Test.State.OtherRuntime";
+    using ConvergencePolicy=AckPolicy;
+};
 
 static Timing::QualifiedTime Capture(){return {55,Timing::TimeReliability::Synchronized};}
 static System::DeviceRuntimeIdentity Identity(std::uint8_t marker,std::uint32_t runtime){
@@ -83,6 +88,8 @@ int main(){
     const auto initial=AckSnapshot(10,100);
     assert(runtime.InstallSubscribeSnapshot<AckState>(owner1,sub1.Handle.Session,{false,10},initial)==S::StateRemoteStatus::Success);
     assert(runtime.GetRemoteSessionStatus<AckState>(owner1.Device)==S::StateRemoteSessionState::ActiveTrusted);
+    assert(runtime.ForgetRemote<AckState>(owner1.Device)==S::StateRemoteStatus::Conflict);
+    assert(runtime.RemoteOwnersInUse<AckState>()==2);
     assert(runtime.ApplyRemotePublication<AckState>(owner1,sub1.Handle.Session,{false,10},initial)==S::StateRemoteStatus::Duplicate);
     assert(runtime.ApplyRemotePublication<AckState>(owner1,sub1.Handle.Session,{false,9},AckSnapshot(9,90))==S::StateRemoteStatus::Older);
     const auto newer=AckSnapshot(11,110);
@@ -109,7 +116,7 @@ int main(){
     assert(runtime.Unsubscribe<AckState>(owner1.Device,S::StateReplicaRelease::RetainLastKnown)==S::StateRemoteStatus::Success);
     assert(runtime.GetRemoteSessionStatus<AckState>(owner1.Device)==S::StateRemoteSessionState::Inactive);
     assert(runtime.TryReadRemote<AckState>(owner1.Device,retained) && retained.Value.Value==20);
-    assert(runtime.Unsubscribe<AckState>(owner1.Device,S::StateReplicaRelease::ReleaseReplica)==S::StateRemoteStatus::Success);
+    assert(runtime.ForgetRemote<AckState>(owner1.Device)==S::StateRemoteStatus::Success);
     assert(runtime.RemoteOwnersInUse<AckState>()==1);
     const auto afterBurn=runtime.ReserveSubscriptionSession<AckState>(owner3.Device);
     assert(afterBurn && afterBurn.Handle.Session.Value()==4); // token 3 was burned by the capacity-rejected attempt.
@@ -151,5 +158,22 @@ int main(){
     assert(runtime.GetSourceSubscriberStatus<BestState>(bestRequester.Device)==S::StateRemoteSessionState::ResyncRequired);
     assert(!runtime.SourceSubscriberDirty<BestState>(bestRequester.Device));
 
+    // Disjoint family Runtime compositions still share the current process's token namespace.
+    // Neither a new Type pack nor another Runtime instance may restart session/resync numbering.
+    Primitive::TypeDirectory<1> otherDirectory;
+    assert(otherDirectory.Register<OtherRuntimeState>()==Primitive::TypeDirectoryRegistrationStatus::Success);
+    assert(otherDirectory.Initialize()==Primitive::TypeDirectoryInitializationStatus::Success);
+    S::Runtime<S::TypeConfiguration<OtherRuntimeState,S::MaximumRemoteOwners<1>>> otherRuntime;
+    assert(otherRuntime.Initialize(otherDirectory.View(),&Capture)==S::StateRuntimeStatus::Success);
+    assert(otherRuntime.Start()==S::StateRuntimeStatus::Success);
+    const auto otherSession=otherRuntime.ReserveSubscriptionSession<OtherRuntimeState>(owner1.Device);
+    assert(otherSession && otherSession.Handle.Session.Value()==5);
+    S::StateResyncToken otherResync{},originalResync{};
+    assert(otherRuntime.AllocateResyncToken(otherResync)==S::StateRemoteStatus::Success && otherResync.Value()==3);
+    assert(runtime.AllocateResyncToken(originalResync)==S::StateRemoteStatus::Success && originalResync.Value()==4);
+    assert(runtime.Unsubscribe<AckState>(owner2.Device,S::StateReplicaRelease::ReleaseReplica)==S::StateRemoteStatus::Success);
+    const auto originalSession=runtime.ReserveSubscriptionSession<AckState>(owner2.Device);
+    assert(originalSession && originalSession.Handle.Session.Value()==6);
+    assert(otherRuntime.Shutdown()==S::StateRuntimeStatus::Success);
     assert(runtime.Shutdown()==S::StateRuntimeStatus::Success);
 }

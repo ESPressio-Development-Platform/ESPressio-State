@@ -1,6 +1,8 @@
 #pragma once
 #include <cstdint>
+#include <mutex>
 #include <ESPressio_DeviceRuntimeIdentity.hpp>
+#include <ESPressio_Synchronization.hpp>
 #include "ESPressio_StateTypes.hpp"
 
 namespace ESPressio::State {
@@ -61,6 +63,29 @@ public:
     }
     constexpr std::uint32_t HighWater() const noexcept { return _highWater; }
 };
+
+namespace Detail {
+/// <summary>One non-resettable token authority shared by every State Runtime in this process.</summary>
+/// <remarks>System identity cannot change in a process. Destroying/reconstructing a family Runtime,
+/// or configuring disjoint Type packs, therefore must not restart either token namespace. The
+/// mutex is resolved during initialization; allocation neither grows storage nor wraps on exhaustion.</remarks>
+class StateProcessTokenAuthority final {
+    inline static System::Synchronization::Mutex _mutex;
+    inline static StateSessionTokenGenerator _sessions{};
+    inline static StateResyncTokenGenerator _resyncs{};
+    StateProcessTokenAuthority()=delete;
+public:
+    static void Initialize() noexcept { std::lock_guard<System::Synchronization::Mutex> lock(_mutex); }
+    static bool TryAllocate(StateSessionToken& output) noexcept {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        return _sessions.TryAllocate(output);
+    }
+    static bool TryAllocate(StateResyncToken& output) noexcept {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        return _resyncs.TryAllocate(output);
+    }
+};
+}
 
 struct StateSubscriptionHandle final {
     StateTypeId TypeId{};

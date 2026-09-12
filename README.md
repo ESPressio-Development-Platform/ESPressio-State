@@ -1,5 +1,22 @@
 # ESPressio State
 
+## Primitives redesign status
+
+The `primitives_redesign` branch is an **incomplete typed-runtime migration**. Use
+`ESPressio_States.hpp` for the new surface. The predecessor documentation below
+has not yet passed the S5-23 rewrite gate and must not be used as the typed API contract.
+
+The current subscription surface closes local admission immediately when an explicit
+`Unsubscribe(handle, disposition)` succeeds. Remote notification is a bounded attempt:
+adapter backpressure does not restore the session. A known owner incarnation is preserved
+in that notification; when the owner incarnation has not yet been learned, closure is local.
+`RetainLastKnown` preserves the immutable snapshot and its slot; `ReleaseReplica` releases it.
+`ForgetRemote` accepts only an inactive replica. Session and resynchronization tokens come
+from one process-wide, non-resettable authority shared by all State Runtime Type packs.
+
+See [STATE_CONTINUATION_CHECKPOINT.md](STATE_CONTINUATION_CHECKPOINT.md) for the
+validated scope and remaining implementation gates. No State tranche completion is claimed.
+
 Strongly typed authoritative-fact and replication infrastructure for the ESPressio Development Platform.
 
 ESPressio State represents **what is true now**. It is deliberately distinct from Command (asynchronous intent) and Event (occurrence/history). Intermediate State revisions may be coalesced because the latest authoritative fact is the semantic result.
