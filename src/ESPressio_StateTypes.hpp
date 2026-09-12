@@ -27,6 +27,7 @@ enum class StateRuntimeStatus : std::uint8_t {
     InvalidDirectory,
     TypeConflict,
     IdentityUnavailable,
+    PersistenceFailure,
     Frozen,
     Stopping
 };
