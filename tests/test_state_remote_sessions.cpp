@@ -120,14 +120,14 @@ int main(){
     S::StateResyncTokenGenerator exhaustedResync(UINT32_MAX);S::StateResyncToken none{};assert(!exhaustedResync.TryAllocate(none));
 
     const auto requester1=Identity(0x31,21),requester2=Identity(0x32,22),requester3=Identity(0x33,23);
-    assert(runtime.ReserveSourceSubscriber<AckState>(requester1,{101})==S::StateRemoteStatus::Success);
-    assert(runtime.ReserveSourceSubscriber<AckState>(requester2,{102})==S::StateRemoteStatus::Success);
-    assert(runtime.ReserveSourceSubscriber<AckState>(requester3,{103})==S::StateRemoteStatus::CapacityUnavailable);
+    assert(runtime.ReserveSourceSubscriber<AckState>(requester1,S::StateSessionToken{101})==S::StateRemoteStatus::Success);
+    assert(runtime.ReserveSourceSubscriber<AckState>(requester2,S::StateSessionToken{102})==S::StateRemoteStatus::Success);
+    assert(runtime.ReserveSourceSubscriber<AckState>(requester3,S::StateSessionToken{103})==S::StateRemoteStatus::CapacityUnavailable);
     assert(runtime.SubscribersInUse<AckState>()==2);
-    assert(runtime.ActivateSourceSubscriber<AckState>(requester1,{101},true,{false,1})==S::StateRemoteStatus::Success);
+    assert(runtime.ActivateSourceSubscriber<AckState>(requester1,S::StateSessionToken{101},true,{false,1})==S::StateRemoteStatus::Success);
     assert(ackOwner.Set({1},{1,Timing::TimeReliability::Synchronized})==S::StateSetStatus::Changed);
     assert(runtime.SourceSubscriberDirty<AckState>(requester1.Device));
-    assert(runtime.AcceptSourceBaseline<AckState>(requester1,{101},runtime.Version<AckState>())==S::StateRemoteStatus::Success);
+    assert(runtime.AcceptSourceBaseline<AckState>(requester1,S::StateSessionToken{101},runtime.Version<AckState>())==S::StateRemoteStatus::Success);
     assert(!runtime.SourceSubscriberDirty<AckState>(requester1.Device));
 
     // Acknowledged convergence remains ordinary through the uint16 wrap, then forces resync at exact half-range.
@@ -141,10 +141,10 @@ int main(){
     assert(!runtime.SourceSubscriberDirty<AckState>(requester1.Device));
 
     const auto bestRequester=Identity(0x41,31);
-    assert(runtime.ReserveSourceSubscriber<BestState>(bestRequester,{201})==S::StateRemoteStatus::Success);
-    assert(runtime.ActivateSourceSubscriber<BestState>(bestRequester,{201},true,{false,1})==S::StateRemoteStatus::Success);
+    assert(runtime.ReserveSourceSubscriber<BestState>(bestRequester,S::StateSessionToken{201})==S::StateRemoteStatus::Success);
+    assert(runtime.ActivateSourceSubscriber<BestState>(bestRequester,S::StateSessionToken{201},true,{false,1})==S::StateRemoteStatus::Success);
     assert(bestOwner.Set({1},{1,Timing::TimeReliability::Synchronized})==S::StateSetStatus::Changed);
-    assert(runtime.AcceptSourceBaseline<BestState>(bestRequester,{201},runtime.Version<BestState>())==S::StateRemoteStatus::Success);
+    assert(runtime.AcceptSourceBaseline<BestState>(bestRequester,S::StateSessionToken{201},runtime.Version<BestState>())==S::StateRemoteStatus::Success);
     for(std::uint32_t value=2;value<=65536;++value)
         assert(bestOwner.Set({value},{value,Timing::TimeReliability::Synchronized})==S::StateSetStatus::Changed);
     assert((runtime.Version<BestState>()==S::StateVersion{true,0}));
