@@ -127,7 +127,7 @@ class Runtime final {
         return std::get<Detail::StateSelectorState<C>>(_selectors);
     }
     template<class C>
-    static StateRuntimeStatus InitializeOne(Primitive::TypeDirectoryView directory,Timing::QualifiedTime(*capture)()) noexcept {
+    StateRuntimeStatus InitializeOne(Primitive::TypeDirectoryView directory,Timing::QualifiedTime(*capture)()) noexcept {
         using T=typename C::StateType;
         const auto* common=directory.Find({StateFamilyId,T::TypeId.Value()});
         if(!common) return StateRuntimeStatus::InvalidDirectory;
@@ -139,14 +139,14 @@ class Runtime final {
         if constexpr(Detail::IsRuntimeIdentityProjection<T>::value) {
             System::DeviceRuntimeIdentity identity{};
             if(!System::RuntimeIdentity::TryRead(identity)) {
-                (void)runtime.RollbackInitialization();
+                (void)runtime.RollbackInitialization(this);
                 return StateRuntimeStatus::IdentityUnavailable;
             }
             const auto truthTime=capture ? capture() : Timing::SystemClock<>::GetInstance().CaptureQualifiedTime();
             const auto installed=runtime.InstallRuntimeIdentityProjection(
                 typename T::ValueType{identity.Incarnation.Value()},truthTime);
             if(installed!=StateRuntimeStatus::Success) {
-                (void)runtime.RollbackInitialization();
+                (void)runtime.RollbackInitialization(this);
                 return installed;
             }
         }
@@ -158,7 +158,7 @@ class Runtime final {
         if constexpr(C::SubscriberCapacity==0) return StateRuntimeStatus::Success;
         else return StateTypeRuntime<typename C::StateType>::Get().BindConvergence(Table<typename C::StateType>().ConvergenceView());
     }
-    template<class C> static void RollbackOne() noexcept { (void)StateTypeRuntime<typename C::StateType>::Get().RollbackInitialization(); }
+    template<class C> void RollbackOne() noexcept { (void)StateTypeRuntime<typename C::StateType>::Get().RollbackInitialization(this); }
     template<class C> static bool ValidateOne() noexcept { return StateTypeRuntime<typename C::StateType>::Get().ValidateStart(); }
 
     static StateRemoteStatus MapTransport(StateTransportAdmissionStatus status) noexcept {
@@ -279,7 +279,10 @@ class Runtime final {
 
 public:
     Runtime()=default;
-    ~Runtime() { if(_initialized) (void)Shutdown(); }
+    ~Runtime() {
+        if(_initialized) (void)Shutdown();
+        else (StateTypeRuntime<typename TConfigurations::StateType>::Get().ReleaseStagedFamily(this),...);
+    }
     Runtime(const Runtime&)=delete;
     Runtime& operator=(const Runtime&)=delete;
 
@@ -290,6 +293,9 @@ public:
         static_assert(!Detail::IsRuntimeIdentityProjection<TState>::value,
                       "DeviceRuntimeIncarnationState is a read-only System projection and exposes no StateOwner");
         if(_initialized) return {};
+        if(StateTypeRuntime<TState>::Get().ClaimFamily(this)!=StateRuntimeStatus::Success) {
+            _configurationError=true;return {};
+        }
         auto owner=StateTypeRuntime<TState>::Get().BindOwner();
         if(!owner) _configurationError=true;
         return owner;
@@ -299,6 +305,8 @@ public:
         using C=Detail::ConfigurationForT<TState,TConfigurations...>;
         static_assert(!std::is_void_v<C>,"State Type is not configured in this Runtime");
         if(_initialized) return StateRuntimeStatus::Frozen;
+        const auto claimed=StateTypeRuntime<TState>::Get().ClaimFamily(this);
+        if(claimed!=StateRuntimeStatus::Success) { _configurationError=true;return claimed; }
         const auto status=StateTypeRuntime<TState>::Get().BindPersistence(binding.View());
         if(status!=StateRuntimeStatus::Success) _configurationError=true;
         return status;
@@ -309,6 +317,8 @@ public:
         static_assert(!std::is_void_v<C>,"State Type is not configured in this Runtime");
         static_assert(TState::IsTransmissibleState,"Only TransmissibleState Types may bind transport adapters");
         if(_initialized) return StateRuntimeStatus::Frozen;
+        const auto claimed=StateTypeRuntime<TState>::Get().ClaimFamily(this);
+        if(claimed!=StateRuntimeStatus::Success) { _configurationError=true;return claimed; }
         const auto status=StateTypeRuntime<TState>::Get().BindTransport(binding.View());
         if(status!=StateRuntimeStatus::Success) _configurationError=true;
         return status;
@@ -322,6 +332,11 @@ public:
         Detail::StateProcessTokenAuthority::Initialize();
         StateRuntimeStatus status=StateRuntimeStatus::Success;
         bool ok=true;
+        // Claims precede preparation, so rollback can never touch a Type staged
+        // by another Runtime. Own configuration stays staged for a corrected retry.
+        auto claim=[&](auto tag){using C=decltype(tag);if(ok){status=StateTypeRuntime<typename C::StateType>::Get().ClaimFamily(this);ok=status==StateRuntimeStatus::Success;}};
+        (claim(TConfigurations{}),...);
+        if(!ok) return status;
         auto bind=[&](auto tag){using C=decltype(tag);if(ok){status=BindConvergenceOne<C>();ok=status==StateRuntimeStatus::Success;}};
         (bind(TConfigurations{}),...);
         if(!ok) return status;

@@ -43,6 +43,7 @@ class StateTypeRuntime final {
     bool _ownerEverBound=false;
     bool _ownerAlive=false;
     bool _restoredDuringInitialize=false;
+    const void* _familyOwner=nullptr;
     std::uint64_t _ownerToken=0;
     StateObserverTargetNode* _observerTargets=nullptr;
     StatePersistenceBindingView<TState> _persistence{};
@@ -92,6 +93,21 @@ public:
     StateTypeRuntime& operator=(const StateTypeRuntime&)=delete;
     static StateTypeRuntime& Get() noexcept { static StateTypeRuntime instance;return instance; }
 
+    StateRuntimeStatus ClaimFamily(const void* owner) noexcept {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        if(!owner) return StateRuntimeStatus::InvalidConfiguration;
+        if(_familyOwner) return _familyOwner==owner?StateRuntimeStatus::Success:StateRuntimeStatus::InvalidConfiguration;
+        if(_phase.load(std::memory_order_relaxed)!=Phase::Uninitialized) return StateRuntimeStatus::Frozen;
+        _familyOwner=owner;
+        return StateRuntimeStatus::Success;
+    }
+    void ReleaseStagedFamily(const void* owner) noexcept {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        if(_familyOwner!=owner || _phase.load(std::memory_order_relaxed)!=Phase::Uninitialized) return;
+        _convergence={};_transport={};_persistence={};
+        _familyOwner=nullptr;
+        _ownerAlive=false;
+    }
     StateOwner<TState> BindOwner() noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         if(_phase.load(std::memory_order_relaxed)!=Phase::Uninitialized || _ownerEverBound) return {};
@@ -189,8 +205,9 @@ public:
         _restoredDuringInitialize=false;
         _phase.store(Phase::Running,std::memory_order_release);
     }
-    StateRuntimeStatus RollbackInitialization() noexcept {
+    StateRuntimeStatus RollbackInitialization(const void* owner) noexcept {
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        if(_familyOwner!=owner) return StateRuntimeStatus::InvalidConfiguration;
         if(_phase.load(std::memory_order_relaxed)==Phase::Prepared){
             _captureTime=nullptr;
             if(_restoredDuringInitialize){
@@ -234,6 +251,7 @@ public:
         _convergence={};
         _transport={};
         _persistence={};
+        _familyOwner=nullptr;
         _phase.store(Phase::Stopped,std::memory_order_release);
         return StateRuntimeStatus::Success;
     }

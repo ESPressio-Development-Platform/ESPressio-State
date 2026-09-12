@@ -274,3 +274,28 @@ Type prepared by another Runtime; abandoned convergence staging needs explicit c
 source duplicate ResyncAccepted handling; adapter wake/continuity and finite convergence pursuit;
 remote observations and remote dynamic tooling; legacy/resource/docs/final gates. Existing
 ESP32 cooperative execution and P4 durability gaps remain later platform migration work.
+
+
+## 2026-09-12T13:58:55.721475+00:00 — Initialization claims and owned rollback
+
+Parent 4b6c120ab142cffb8cfa080202294fbaba31a49f, tree
+a9119559f37affe558bebe4512ea4d0db1912394. CI 34697654142 host-contracts and
+esp32-typed-surface both SUCCESS. Canonical living handoff is Revision 109.
+
+Each Type now records its staging family owner. BindOwner/BindTransport/BindPersistence and
+Initialize claim the Type; another Runtime cannot prepare or roll back that configuration.
+Rollback checks the claimant. Failed initialization retains its own staged configuration for a
+corrected retry; destruction of an uninitialized claimant detaches only its own borrowed
+bindings and releases its claim. Running teardown clears the claim after drain. Owner capability
+non-rebinding remains process-lifetime and is not reset by abandoned staging.
+
+The new initialization fixture failed on predecessor source when a conflicting Runtime rolled
+back the first Runtime's Prepared Type. It now verifies that the first Runtime can Start/Set,
+that partial claims are released on abandonment, and that failed transport/convergence staging
+can be replaced without retaining the old Runtime address. All 16 active host executables were
+rebuilt and passed. The CMake list includes initialization. Current CI is required after publish.
+
+Next: exact duplicate source resync acceptance, frozen wake/continuity seam and adapter-reported
+finite convergence pursuit/exhaustion, remote observer/read tooling, legacy/resources/docs/final
+State closure. Keep semantic campaign state in State and adapter retry ownership on its locked
+side of the boundary; do not add per-Type Tasks or periodic anti-entropy polling.
