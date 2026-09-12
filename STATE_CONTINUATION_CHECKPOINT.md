@@ -124,3 +124,51 @@ Command lane/admission implementation, Mesh receiver/worker, all four MeshAdapte
 paths, RadioWorker and RadioTransport ingress/fragmentation. These still expose the documented
 later-tranche migration gaps. Continue the source audit and State completion under existing
 authorization; do not repeat the entire document read or request implementation permission.
+
+2026-09-12T13:16:42.322406+00:00
+
+## STATUS UPDATE: mandatory context audit complete; retry-safe State controls in progress
+
+The foreground continuation completed the Section 1 current-state data-flow and ownership
+review, following the full document read. It inspected the remaining Thread root lifecycle/
+common-wake/Precision implementation and tests, Task substrate shutdown tests, Event lane/
+inbox/outbound implementation, State predecessor sources and all nine predecessor tests,
+Serializable bounded graph/decode, System identity/synchronization, Persistence atomic records,
+Mesh receiver/broadcast/worker, MeshAdapters ownership, Radio ingress/egress/clock, Observable,
+Logging/Security integration and ESP32 execution/radio/storage providers. This establishes the
+required current-state model; it does not certify unimplemented behavior or hardware behavior.
+The earlier source-audit-open counters are superseded. Further source inspection should target
+implementation work, not restart the broad audit.
+
+Current data flow: local Event captures origin before pool/lane admission; its one T1 lane
+fans out retained leases, and selected Thread capabilities release FIFO quota before callback.
+Command reserves fixed request/execution/response state, invokes handlers only on T1 lanes
+after durable Started, and routes responses through a shared TaskExecutor to selected TH16
+callbacks. State Set commits persistence before canonical RAM and observer bits; current
+remote ingress runs synchronously in the adapter's family-service caller, with bounded table
+state and borrowed outgoing semantic messages. Mesh delivers borrowed bytes synchronously;
+its old Event adapter must own a packet before returning and is not compatible with the new
+Event family surface. RadioWorker drains provider ingress, RadioTransport reassembles into
+fixed records and borrows completed bytes through callbacks before reset; outgoing fragmentation
+still dynamically sizes a per-send frame. RadioControlWorker services synchronization;
+Mesh selects the reference, while the old Radio exchange still uses current-clock-minus-elapsed
+capture reconstruction and fixed cadence. These later migrations remain explicit work.
+
+A material provider gap is confirmed: ESP32Platform::Initialize installs ExecutionProvider,
+which implements ordinary Create/Destroy but does not override CreateJoinable/Join. The base
+System interface returns Unsupported, so current no-RTTI compile probes do not establish
+working Task/Thread runtime execution with that concrete provider. Its cooperative execution
+implementation is required before final platform completion. ESP32 file/Preferences storage
+also does not advertise the complete P4 durability capabilities; do not claim hardware durability.
+
+This next State change stores one fixed control snapshot per source subscriber. Subscribe
+retries preserve the original snapshot or NoValue result because SubscribeAccepted has no
+version. Resync retries preserve the snapshot associated with their token; a bounded token
+high-water rejects older resync requests. Older same-runtime SubscribeRequest tokens cannot
+replace a newer live source session. Set records LatestVersion even during establishment or
+resync; acceptance and latest-transfer preparation cannot overwrite a newer table fact with
+a stale canonical read. Tests exercise initial and resync retry across Set, NoValue retries,
+older session/token rejection, and deterministic read/commit/completion interleavings.
+State remains incomplete: nonblocking transactional admission, wake/continuity integration,
+finite pursuit scheduling/exhaustion, remote observation/tooling, legacy/docs/resource/final
+closure are still required before Adapters. Existing implementation authorization remains active.

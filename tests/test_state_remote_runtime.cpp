@@ -82,6 +82,39 @@ int main(){
     // An ordinary ACK has no resync token and cannot complete even the same-version resync.
     assert(emptyHandshake.AcceptSubscriberBaseline(remoteRequester,S::StateSessionToken{90},{false,1})==S::StateRemoteStatus::SessionMismatch);
     assert(emptyHandshake.SubscriberState(remoteRequester.Device)==S::StateRemoteSessionState::AwaitingResync);
+    emptyHandshake.MarkLatestDirty({false,2});
+    assert(emptyHandshake.AcceptSubscriberResync(remoteRequester,S::StateSessionToken{90},S::StateResyncToken{12},{false,1},{false,1})==S::StateRemoteStatus::Success);
+    assert(emptyHandshake.SubscriberDirty(remoteRequester.Device));
+
+    // Model the acceptance's canonical read racing a later Set before its table
+    // transaction. The table's committed latest version must win over that read.
+    S::StateRemoteReplicaTable<RuntimeState,0,1> racingHandshake;
+    assert(racingHandshake.ReserveSubscriber(remoteRequester,S::StateSessionToken{91})==S::StateRemoteStatus::Success);
+    bool handshakeHasValue=true;
+    S::StateVersion handshakeVersion{false,1};
+    S::StateSnapshot<RuntimeState> handshakeSnapshot{{1},{1,Timing::TimeReliability::Synchronized}};
+    assert(racingHandshake.PrepareSubscriberEstablishment(remoteRequester,S::StateSessionToken{91},handshakeHasValue,handshakeVersion,handshakeSnapshot)==S::StateRemoteStatus::Success);
+    racingHandshake.MarkLatestDirty({false,2});
+    assert(racingHandshake.AcceptSubscriberEstablishment(remoteRequester,S::StateSessionToken{91},{false,1})==S::StateRemoteStatus::Success);
+    assert(racingHandshake.SubscriberDirty(remoteRequester.Device));
+    S::StateSourceWork racingWork{};
+    assert(!racingHandshake.TryPrepareLatest({false,1},racingWork));
+    assert(racingHandshake.SubscriberDirty(remoteRequester.Device));
+    assert(racingHandshake.TryPrepareLatest({false,2},racingWork));
+    racingHandshake.MarkLatestDirty({false,3});
+    racingHandshake.CompleteLatestTransfer(racingWork,true);
+    assert(racingHandshake.SubscriberDirty(remoteRequester.Device));
+    assert(racingHandshake.ReserveSubscriber(remoteRequester,S::StateSessionToken{90})==S::StateRemoteStatus::SessionMismatch);
+    assert(racingHandshake.SubscriberState(remoteRequester.Device)==S::StateRemoteSessionState::ActiveTrusted);
+    assert(racingHandshake.ReserveSubscriber(remoteRequester,S::StateSessionToken{92})==S::StateRemoteStatus::Success);
+    handshakeHasValue=false;handshakeVersion={};
+    assert(racingHandshake.PrepareSubscriberEstablishment(remoteRequester,S::StateSessionToken{92},handshakeHasValue,handshakeVersion,handshakeSnapshot)==S::StateRemoteStatus::Success);
+    racingHandshake.MarkLatestDirty({false,4});
+    handshakeHasValue=true;handshakeVersion={false,4};
+    assert(racingHandshake.PrepareSubscriberEstablishment(remoteRequester,S::StateSessionToken{92},handshakeHasValue,handshakeVersion,handshakeSnapshot)==S::StateRemoteStatus::Success);
+    assert(!handshakeHasValue && !handshakeVersion);
+    assert(racingHandshake.AcceptSubscriberEstablishment(remoteRequester,S::StateSessionToken{92},{})==S::StateRemoteStatus::Success);
+    assert(racingHandshake.SubscriberDirty(remoteRequester.Device));
 
     assert(owner.Set({10},{100,Timing::TimeReliability::Synchronized})==S::StateSetStatus::Changed);
 
@@ -97,6 +130,12 @@ int main(){
 
     // The canonical truth may advance while the subscriber is still establishing.
     assert(owner.Set({11},{110,Timing::TimeReliability::Synchronized})==S::StateSetStatus::Changed);
+
+    // A retry of the same request must preserve the baseline identified by its
+    // versionless SubscribeAccepted, even after the canonical truth advances.
+    admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteRequester});
+    assert(admitted && adapter.Last.Kind==S::StateMessageKind::SubscribeSnapshot);
+    assert(adapter.Last.Snapshot.Value.Value==10 && (adapter.Last.Version==S::StateVersion{false,1}));
 
     S::StateControlWireHeader subscribeAccepted{S::StateMessageKind::SubscribeAccepted,RuntimeState::TypeId,
         local,remoteRequester,S::StateSessionToken{41},{},0};
@@ -125,6 +164,28 @@ int main(){
     adapter.Accept=true;
     assert(runtime.ServiceLatest<RuntimeState>());
     assert(adapter.Last.Snapshot.Value.Value==12 && (adapter.Last.Version==S::StateVersion{false,3}));
+
+    // Resync retransmissions also retain their token's exact snapshot. A later
+    // canonical commit becomes follow-up work after the matching acceptance.
+    S::StateControlWireHeader sourceResync{S::StateMessageKind::ResyncRequest,RuntimeState::TypeId,
+        local,remoteRequester,S::StateSessionToken{41},S::StateResyncToken{93},0};
+    encoded=S::EncodeStateControl(sourceResync,bytes.data(),bytes.size());assert(encoded);
+    admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteRequester});assert(admitted);
+    assert(adapter.Last.Kind==S::StateMessageKind::ResyncSnapshot && adapter.Last.Snapshot.Value.Value==12);
+    assert(owner.Set({13},{130,Timing::TimeReliability::Synchronized})==S::StateSetStatus::Changed);
+    admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteRequester});assert(admitted);
+    assert(adapter.Last.Snapshot.Value.Value==12 && (adapter.Last.Version==S::StateVersion{false,3}));
+    S::StateAcceptanceControlWireHeader sourceResyncAccepted{{S::StateMessageKind::ResyncAccepted,
+        RuntimeState::TypeId,local,remoteRequester,S::StateSessionToken{41},S::StateResyncToken{93},0},{false,3}};
+    encoded=S::EncodeStateAcceptanceControl(sourceResyncAccepted,bytes.data(),bytes.size());assert(encoded);
+    admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteRequester});assert(admitted);
+    assert(runtime.SourceSubscriberDirty<RuntimeState>(remoteRequester.Device));
+    assert(runtime.ServiceLatest<RuntimeState>());
+    assert(adapter.Last.Kind==S::StateMessageKind::Publication && adapter.Last.Snapshot.Value.Value==13);
+    sourceResync.Resync=S::StateResyncToken{92};
+    encoded=S::EncodeStateControl(sourceResync,bytes.data(),bytes.size());assert(encoded);
+    admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteRequester});
+    assert(admitted.Disposition==Primitive::PrimitiveAdmissionDisposition::Rejected);
 
     // Requester side: source snapshot is committed before SubscribeAccepted is offered.
     const auto session=runtime.SubscribeFrom<RuntimeState>(remoteOwner.Device);assert(session);

@@ -598,8 +598,8 @@ public:
                 if(status!=StateRemoteStatus::Success && status!=StateRemoteStatus::Duplicate)
                     return {MapRemoteAdmission(status),StateWireStatus::Success};
                 StateSnapshot<TState> snapshot{};StateVersion version{};
-                const bool hasValue=StateTypeRuntime<TState>::Get().TryReadVersioned(snapshot,version);
-                const auto offered=Table<TState>().OfferSubscriberBaseline(decoded.Requester,decoded.Session,hasValue,version);
+                bool hasValue=StateTypeRuntime<TState>::Get().TryReadVersioned(snapshot,version);
+                const auto offered=Table<TState>().PrepareSubscriberEstablishment(decoded.Requester,decoded.Session,hasValue,version,snapshot);
                 if(offered!=StateRemoteStatus::Success) return {MapRemoteAdmission(offered),StateWireStatus::Success};
                 reply.Kind=hasValue?StateMessageKind::SubscribeSnapshot:StateMessageKind::SubscribeNoValue;
                 reply.Version=version;reply.Snapshot=snapshot;reply.HasSnapshot=hasValue;
@@ -679,7 +679,7 @@ public:
                 StateSnapshot<TState> snapshot{};StateVersion version{};
                 if(!StateTypeRuntime<TState>::Get().TryReadVersioned(snapshot,version))
                     return {D::Rejected,StateWireStatus::Success};
-                status=Table<TState>().BeginSubscriberResync(decoded.Requester,decoded.Session,decoded.Resync,version);
+                status=Table<TState>().PrepareSubscriberResync(decoded.Requester,decoded.Session,decoded.Resync,version,snapshot);
                 if(status!=StateRemoteStatus::Success) break;
                 reply.Kind=StateMessageKind::ResyncSnapshot;reply.Resync=decoded.Resync;
                 reply.Version=version;reply.Snapshot=snapshot;reply.HasSnapshot=true;
