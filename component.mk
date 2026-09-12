@@ -1,6 +1,6 @@
 COMPONENT_ADD_INCLUDEDIRS := src
 COMPONENT_SRCDIRS := src
-COMPONENT_REQUIRES := ESPressio_Observable
+COMPONENT_REQUIRES := ESPressio_System ESPressio_Primitive ESPressio_Threads ESPressio_Timing ESPressio_Serializable ESPressio_Persistence
 
 CXXFLAGS += -DESPRESSIO_STATE
 CXXFLAGS += -DESPRESSIO_STATE_VERSION_MAJOR=0

@@ -19,8 +19,6 @@ jobs:
       - uses: actions/checkout@v4
         with: {repository: ESPressio-Development-Platform/ESPressio-Units, ref: primitives_redesign, path: deps/ESPressio-Units}
       - uses: actions/checkout@v4
-        with: {repository: ESPressio-Development-Platform/ESPressio-Observable, ref: primitives_redesign, path: deps/ESPressio-Observable}
-      - uses: actions/checkout@v4
         with: {repository: ESPressio-Development-Platform/ESPressio-Timing, ref: primitives_redesign, path: deps/ESPressio-Timing}
       - uses: actions/checkout@v4
         with: {repository: ESPressio-Development-Platform/ESPressio-Serializable, ref: primitives_redesign, path: deps/ESPressio-Serializable}
@@ -54,7 +52,6 @@ jobs:
               https://github.com/ESPressio-Development-Platform/ESPressio-Task.git#primitives_redesign
               https://github.com/ESPressio-Development-Platform/ESPressio-Threads.git#primitives_redesign
               https://github.com/ESPressio-Development-Platform/ESPressio-Units.git#primitives_redesign
-              https://github.com/ESPressio-Development-Platform/ESPressio-Observable.git#primitives_redesign
               https://github.com/ESPressio-Development-Platform/ESPressio-Timing.git#primitives_redesign
               https://github.com/ESPressio-Development-Platform/ESPressio-Serializable.git#primitives_redesign
               https://github.com/ESPressio-Development-Platform/ESPressio-Persistence.git#primitives_redesign

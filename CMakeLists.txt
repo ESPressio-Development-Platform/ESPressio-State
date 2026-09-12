@@ -1,15 +1,5 @@
-set(COMPONENT_SRCDIRS
-    "src"
-)
-
-set(COMPONENT_ADD_INCLUDEDIRS
-    "src"
-)
-
-set(COMPONENT_REQUIRES
-    "ESPressio_Observable"
-    "ESPressio_Primitive"
-    "ESPressio_Threads"
-)
-
+set(COMPONENT_SRCDIRS "src")
+set(COMPONENT_ADD_INCLUDEDIRS "src")
+set(COMPONENT_REQUIRES "ESPressio_System" "ESPressio_Primitive" "ESPressio_Threads" "ESPressio_Timing" "ESPressio_Serializable" "ESPressio_Persistence")
 register_component()
+target_compile_features(${COMPONENT_TARGET} PUBLIC cxx_std_17)
