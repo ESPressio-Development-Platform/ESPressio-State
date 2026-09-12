@@ -36,6 +36,7 @@ struct StateRemoteOwnerSlot final {
     StateResyncToken LastAcceptedResync{};
     StateVersion LastAcceptedResyncVersion{};
     bool ResyncRequestPending=false;
+    bool NeedsConvergence=false;
 };
 
 template<class TState>
@@ -61,6 +62,7 @@ struct StateSourceSubscriberSlot final {
     StateResyncToken ResyncHighWater{};
     StateResyncToken LastAcceptedResync{};
     StateVersion LastAcceptedResyncVersion{};
+    bool NeedsConvergence=false;
 };
 
 struct StateSourceWork final {
@@ -74,13 +76,19 @@ template<class TState>
 struct StateConvergenceBindingView final {
     void* Owner=nullptr;
     void (*MarkLatestDirty)(void*,StateVersion) noexcept=nullptr;
-    constexpr explicit operator bool() const noexcept { return Owner && MarkLatestDirty; }
+    StateRemoteStatus (*ReportExhausted)(void*,const StateConvergenceHandle&) noexcept=nullptr;
+    bool (*RearmAvailability)(void*) noexcept=nullptr;
+    bool (*NeedsConvergence)(void*,const System::DeviceIdentifier&,StateContinuitySide) noexcept=nullptr;
+    constexpr explicit operator bool() const noexcept {
+        return Owner && MarkLatestDirty && ReportExhausted && RearmAvailability && NeedsConvergence;
+    }
 };
 
 /// <summary>Fixed per-Type remote-owner and source-subscriber State convergence storage.</summary>
 /// <remarks>No slot stores transport reachability/freshness or an unbounded revision history. Full capacity
 /// rejects a new semantic owner/requester; existing slots are never silently evicted. Last-known remote
-/// snapshots remain readable independently of session state.</remarks>
+/// snapshots remain readable independently of session state. P2 exhaustion stores one dormant bit only;
+/// attempt/deadline/route/retry state remains adapter-owned.</remarks>
 template<class TState,std::size_t RemoteOwners,std::size_t Subscribers>
 class StateRemoteReplicaTable final {
     using Value=typename TState::ValueType;
@@ -126,6 +134,7 @@ class StateRemoteReplicaTable final {
     static void PreserveControlContinuity(StateSourceSubscriberSlot<TState>& slot,StateVersion current) noexcept {
         if(slot.HasOfferedBaseline && (slot.ControlContinuityLost ||
            BaselineContinuityLost(slot.OfferedBaseline,current))) {
+            slot.NeedsConvergence=false;
             slot.SessionState=StateRemoteSessionState::ResyncRequired;
             slot.ResyncRequiredPending=true;
             slot.Dirty=false;
@@ -170,6 +179,7 @@ public:
             if(slot->SessionState==StateRemoteSessionState::ResyncRequired || slot->SessionState==StateRemoteSessionState::AwaitingResync)
                 return StateRemoteStatus::Duplicate;
             if(slot->SessionState!=StateRemoteSessionState::ActiveTrusted) return StateRemoteStatus::Conflict;
+            slot->NeedsConvergence=false;
             slot->SessionState=StateRemoteSessionState::ResyncRequired;
             slot->Resync={};slot->ResyncRequestPending=true;
         } else {
@@ -180,16 +190,113 @@ public:
             if(slot->SessionState==StateRemoteSessionState::ResyncRequired || slot->SessionState==StateRemoteSessionState::AwaitingResync)
                 return StateRemoteStatus::Duplicate;
             if(slot->SessionState!=StateRemoteSessionState::ActiveTrusted) return StateRemoteStatus::Conflict;
+            slot->NeedsConvergence=false;
             slot->SessionState=StateRemoteSessionState::ResyncRequired;
             slot->Resync={};slot->Dirty=false;slot->ResyncRequiredPending=true;
         }
         return StateRemoteStatus::Success;
     }
+
+    /// <summary>Records terminal finite-campaign exhaustion only for the exact still-current work.</summary>
+    /// <remarks>No retry clock or attempt counter is stored. The session becomes dormant until a
+    /// new authoritative fact, explicit resync/continuity action or adapter-availability transition rearms it.</remarks>
+    StateRemoteStatus ReportConvergenceExhausted(const StateConvergenceHandle& handle) noexcept {
+        if(!handle || handle.TypeId!=TState::TypeId) return StateRemoteStatus::InvalidIdentity;
+        Detail::StateAdmissionLock<true> lock(_mutex);
+        if(!lock) return StateRemoteStatus::Busy;
+        if(handle.Kind==StateConvergenceWorkKind::ResyncRequest) {
+            auto* slot=FindOwnerLocked(handle.Owner.Device);
+            if(!slot) return StateRemoteStatus::NotFound;
+            if(slot->Owner!=handle.Owner || slot->Session!=handle.Session) return StateRemoteStatus::SessionMismatch;
+            if(slot->NeedsConvergence) return StateRemoteStatus::Duplicate;
+            if(slot->SessionState!=StateRemoteSessionState::AwaitingResync || slot->Resync!=handle.Resync)
+                return StateRemoteStatus::SessionMismatch;
+            slot->SessionState=StateRemoteSessionState::ResyncRequired;
+            slot->Resync={};
+            slot->ResyncRequestPending=false;
+            slot->NeedsConvergence=true;
+            return StateRemoteStatus::Success;
+        }
+        auto* slot=FindSubscriberLocked(handle.Requester.Device);
+        if(!slot) return StateRemoteStatus::NotFound;
+        if(slot->Requester!=handle.Requester || slot->Session!=handle.Session) return StateRemoteStatus::SessionMismatch;
+        switch(handle.Kind) {
+            case StateConvergenceWorkKind::Publication:
+                if(slot->SessionState!=StateRemoteSessionState::ActiveTrusted || !slot->LatestVersion ||
+                   slot->LatestVersion!=handle.Version || !slot->HasOfferedBaseline || slot->OfferedBaseline!=handle.Version)
+                    return slot->LatestVersion && slot->LatestVersion!=handle.Version ? StateRemoteStatus::Older : StateRemoteStatus::SessionMismatch;
+                if(slot->HasAcceptedBaseline && slot->AcceptedBaseline==handle.Version) return StateRemoteStatus::Duplicate;
+                if(slot->NeedsConvergence) return StateRemoteStatus::Duplicate;
+                slot->Dirty=false;slot->NeedsConvergence=true;
+                return StateRemoteStatus::Success;
+            case StateConvergenceWorkKind::BaselineSnapshot:
+                if(slot->SessionState!=StateRemoteSessionState::ActiveNoBaseline || !slot->HasPendingFirstBaseline ||
+                   !slot->LatestVersion || slot->LatestVersion!=handle.Version || !slot->HasOfferedBaseline || slot->OfferedBaseline!=handle.Version)
+                    return slot->LatestVersion && slot->LatestVersion!=handle.Version ? StateRemoteStatus::Older : StateRemoteStatus::SessionMismatch;
+                if(slot->NeedsConvergence) return StateRemoteStatus::Duplicate;
+                slot->Dirty=false;slot->NeedsConvergence=true;
+                return StateRemoteStatus::Success;
+            case StateConvergenceWorkKind::ResyncRequired:
+                if(slot->SessionState!=StateRemoteSessionState::ResyncRequired || !slot->LatestVersion || slot->LatestVersion!=handle.Version)
+                    return slot->LatestVersion && slot->LatestVersion!=handle.Version ? StateRemoteStatus::Older : StateRemoteStatus::SessionMismatch;
+                if(slot->NeedsConvergence) return StateRemoteStatus::Duplicate;
+                slot->ResyncRequiredPending=false;slot->NeedsConvergence=true;
+                return StateRemoteStatus::Success;
+            case StateConvergenceWorkKind::ResyncSnapshot:
+                if(slot->SessionState!=StateRemoteSessionState::AwaitingResync || slot->Resync!=handle.Resync ||
+                   !slot->HasOfferedBaseline || slot->OfferedBaseline!=handle.Version)
+                    return StateRemoteStatus::SessionMismatch;
+                if(slot->NeedsConvergence) return StateRemoteStatus::Duplicate;
+                // A failed resync campaign is not retried under the old token. Return to
+                // ResyncRequired and wait dormant; availability/explicit work begins a fresh token.
+                slot->SessionState=StateRemoteSessionState::ResyncRequired;
+                slot->Resync={};slot->Dirty=false;slot->ResyncRequiredPending=false;
+                slot->NeedsConvergence=true;
+                return StateRemoteStatus::Success;
+            case StateConvergenceWorkKind::ResyncRequest:
+            case StateConvergenceWorkKind::Invalid:
+                return StateRemoteStatus::InvalidIdentity;
+        }
+        return StateRemoteStatus::Conflict;
+    }
+
+    /// <summary>Rearms every dormant session once after a relevant adapter availability transition.</summary>
+    bool RearmAvailability() noexcept {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        bool rearmed=false;
+        for(auto& slot:_owners) {
+            if(!slot.Occupied || !slot.NeedsConvergence) continue;
+            if(slot.SessionState==StateRemoteSessionState::ResyncRequired) {
+                slot.NeedsConvergence=false;slot.ResyncRequestPending=true;rearmed=true;
+            }
+        }
+        for(auto& slot:_subscribers) {
+            if(!slot.Occupied || !slot.NeedsConvergence) continue;
+            if(slot.SessionState==StateRemoteSessionState::ActiveTrusted ||
+               slot.SessionState==StateRemoteSessionState::ActiveNoBaseline) {
+                slot.NeedsConvergence=false;slot.Dirty=true;rearmed=true;
+            } else if(slot.SessionState==StateRemoteSessionState::ResyncRequired) {
+                slot.NeedsConvergence=false;slot.ResyncRequiredPending=true;rearmed=true;
+            }
+        }
+        return rearmed;
+    }
+    bool IsNeedsConvergence(const System::DeviceIdentifier& peer,StateContinuitySide side) const noexcept {
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        if(side==StateContinuitySide::RemoteOwner) {
+            const auto* slot=FindOwnerLocked(peer);return slot?slot->NeedsConvergence:false;
+        }
+        if(side==StateContinuitySide::SourceSubscriber) {
+            const auto* slot=FindSubscriberLocked(peer);return slot?slot->NeedsConvergence:false;
+        }
+        return false;
+    }
+
     StateRemoteStatus TryPrepareRemoteResync(StateRemoteResyncWork& output) noexcept {
         Detail::StateAdmissionLock<true> lock(_mutex);
         if(!lock) return StateRemoteStatus::Busy;
         for(auto& slot:_owners) {
-            if(!slot.Occupied || !slot.ResyncRequestPending) continue;
+            if(!slot.Occupied || slot.NeedsConvergence || !slot.ResyncRequestPending) continue;
             if(slot.SessionState!=StateRemoteSessionState::ResyncRequired && slot.SessionState!=StateRemoteSessionState::AwaitingResync) continue;
             StateResyncToken token{};
             const auto allocated=Detail::StateProcessTokenAuthority::TryAllocateResyncNonBlocking(token);
@@ -218,6 +325,7 @@ public:
             slot.SessionState=StateRemoteSessionState::Inactive;
             slot.Resync={};
             slot.ResyncRequestPending=false;
+            slot.NeedsConvergence=false;
         }
         for(auto& slot:_subscribers) slot={};
     }
@@ -241,6 +349,7 @@ public:
         slot->Baseline={};
         slot->Resync={};
         slot->ResyncRequestPending=false;
+        slot->NeedsConvergence=false;
         return StateRemoteStatus::Success;
     }
 
@@ -264,6 +373,7 @@ public:
         slot->SessionState=StateRemoteSessionState::ActiveTrusted;
         slot->Resync={};
         slot->ResyncRequestPending=false;
+        slot->NeedsConvergence=false;
         return StateRemoteStatus::Success;
     }
     template<bool NonBlocking=false>
@@ -282,6 +392,7 @@ public:
         slot->SessionState=StateRemoteSessionState::ActiveNoBaseline;
         slot->Resync={};
         slot->ResyncRequestPending=false;
+        slot->NeedsConvergence=false;
         return StateRemoteStatus::Success;
     }
     template<bool NonBlocking=false>
@@ -301,6 +412,7 @@ public:
         slot->HasValue=true;
         slot->Baseline=version;
         slot->SessionState=StateRemoteSessionState::ActiveTrusted;
+        slot->NeedsConvergence=false;
         return StateRemoteStatus::Success;
     }
 
@@ -315,23 +427,27 @@ public:
         if(slot->Session!=session || slot->Owner!=owner) return StateRemoteStatus::SessionMismatch;
         if(slot->SessionState==StateRemoteSessionState::AwaitingResync) return StateRemoteStatus::AwaitingResync;
         if(slot->SessionState!=StateRemoteSessionState::ActiveTrusted) {
+            slot->NeedsConvergence=false;
             slot->SessionState=StateRemoteSessionState::ResyncRequired;
             return StateRemoteStatus::ResyncRequired;
         }
         switch(CompareStateVersion(slot->Baseline,version)) {
             case StateVersionRelation::Duplicate:
                 if(slot->HasValue && SnapshotExact(slot->Snapshot,snapshot)) return StateRemoteStatus::Duplicate;
+                slot->NeedsConvergence=false;
                 slot->SessionState=StateRemoteSessionState::ResyncRequired;
                 return StateRemoteStatus::ResyncRequired;
             case StateVersionRelation::Older:
                 return StateRemoteStatus::Older;
             case StateVersionRelation::Ambiguous:
+                slot->NeedsConvergence=false;
                 slot->SessionState=StateRemoteSessionState::ResyncRequired;
                 return StateRemoteStatus::ResyncRequired;
             case StateVersionRelation::Newer:
                 slot->Snapshot=snapshot;
                 slot->HasValue=true;
                 slot->Baseline=version;
+                slot->NeedsConvergence=false;
                 return StateRemoteStatus::Success;
         }
         return StateRemoteStatus::Conflict;
@@ -341,6 +457,7 @@ public:
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         auto* slot=FindOwnerLocked(device);
         if(!slot) return StateRemoteStatus::NotFound;
+        slot->NeedsConvergence=false;
         slot->SessionState=StateRemoteSessionState::ResyncRequired;
         slot->Resync={};
         slot->ResyncRequestPending=false;
@@ -353,6 +470,7 @@ public:
         if(!slot) return StateRemoteStatus::NotFound;
         if(slot->SessionState!=StateRemoteSessionState::ResyncRequired && slot->SessionState!=StateRemoteSessionState::AwaitingResync)
             return StateRemoteStatus::Conflict;
+        slot->NeedsConvergence=false;
         slot->ResyncRequestPending=false;
         slot->Resync=token;
         slot->SessionState=StateRemoteSessionState::AwaitingResync;
@@ -381,6 +499,7 @@ public:
             const auto allocated=Detail::StateProcessTokenAuthority::TryAllocateResyncNonBlocking(fresh);
             if(allocated!=StateRemoteStatus::Success) return allocated;
         } else if(!Detail::StateProcessTokenAuthority::TryAllocate(fresh)) return StateRemoteStatus::TokenExhausted;
+        slot->NeedsConvergence=false;
         slot->ResyncRequestPending=false;
         slot->Resync=fresh;
         slot->SessionState=StateRemoteSessionState::AwaitingResync;
@@ -409,6 +528,7 @@ public:
         slot->LastAcceptedResyncVersion=version;
         slot->Resync={};
         slot->ResyncRequestPending=false;
+        slot->NeedsConvergence=false;
         slot->SessionState=StateRemoteSessionState::ActiveTrusted;
         return StateRemoteStatus::Success;
     }
@@ -447,6 +567,7 @@ public:
         slot->Session={};
         slot->Resync={};
         slot->ResyncRequestPending=false;
+        slot->NeedsConvergence=false;
         slot->Baseline={};
         slot->SessionState=StateRemoteSessionState::Inactive;
         return StateRemoteStatus::Success;
@@ -463,6 +584,7 @@ public:
         else {
             slot->Owner.Incarnation={};
             slot->Session={};slot->Resync={};slot->Baseline={};
+            slot->NeedsConvergence=false;
             slot->SessionState=StateRemoteSessionState::Inactive;
         }
         return StateRemoteStatus::Success;
@@ -559,16 +681,12 @@ public:
         if(slot->SessionState==StateRemoteSessionState::ActiveTrusted ||
            slot->SessionState==StateRemoteSessionState::ActiveNoBaseline) return StateRemoteStatus::Duplicate;
         if(slot->SessionState!=StateRemoteSessionState::Establishing) return StateRemoteStatus::Conflict;
-        // Set publishes its latest version under this same table lock, including
-        // while establishing. Prefer that fact over a caller snapshot taken before
-        // a racing Set; otherwise acceptance can erase the only convergence wake.
         if(slot->LatestVersion) current=slot->LatestVersion;
         slot->HasAcceptedBaseline=slot->HasOfferedBaseline;
         slot->AcceptedBaseline=slot->HasOfferedBaseline?slot->OfferedBaseline:StateVersion{};
-        // NoValue is a handshake result, not evidence for a fact committed while
-        // establishment was in flight. That first fact still needs a baseline.
         slot->Dirty=bool(current) && (!slot->HasOfferedBaseline || current!=slot->OfferedBaseline);
         slot->LatestVersion=current;
+        slot->NeedsConvergence=false;
         slot->SessionState=slot->HasOfferedBaseline?StateRemoteSessionState::ActiveTrusted:StateRemoteSessionState::ActiveNoBaseline;
         PreserveControlContinuity(*slot,current);
         return StateRemoteStatus::Success;
@@ -581,6 +699,7 @@ public:
         slot->HasAcceptedBaseline=hasBaseline;
         slot->AcceptedBaseline=hasBaseline?baseline:StateVersion{};
         slot->Dirty=false;
+        slot->NeedsConvergence=false;
         slot->SessionState=hasBaseline?StateRemoteSessionState::ActiveTrusted:StateRemoteSessionState::ActiveNoBaseline;
         return StateRemoteStatus::Success;
     }
@@ -588,6 +707,8 @@ public:
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         for(auto& slot:_subscribers) {
             if(!slot.Occupied) continue;
+            // A new authoritative fact is one of the three explicit P2 rearm causes.
+            slot.NeedsConvergence=false;
             slot.LatestVersion=current;
             if(slot.HasOfferedBaseline &&
                (slot.SessionState==StateRemoteSessionState::Establishing ||
@@ -643,13 +764,12 @@ public:
         auto* slot=FindSubscriberLocked(requester.Device);
         if(!slot) return StateRemoteStatus::NotFound;
         if(slot->Requester!=requester || slot->Session!=session) return StateRemoteStatus::SessionMismatch;
-        // Ordinary acceptance has no resync token. Only the matching ResyncAccepted
-        // transaction can restore trust once continuity has been invalidated.
         if(slot->SessionState!=StateRemoteSessionState::ActiveTrusted &&
            slot->SessionState!=StateRemoteSessionState::ActiveNoBaseline)
             return StateRemoteStatus::SessionMismatch;
         if(slot->SessionState==StateRemoteSessionState::ActiveTrusted && slot->HasAcceptedBaseline &&
            slot->AcceptedBaseline==version) {
+            slot->NeedsConvergence=false;
             slot->Dirty=bool(slot->LatestVersion) && slot->LatestVersion!=version;
             return StateRemoteStatus::Success;
         }
@@ -657,6 +777,7 @@ public:
         slot->AcceptedBaseline=version;
         slot->HasAcceptedBaseline=true;
         slot->HasPendingFirstBaseline=false;
+        slot->NeedsConvergence=false;
         slot->Dirty=bool(slot->LatestVersion) && slot->LatestVersion!=version;
         slot->SessionState=StateRemoteSessionState::ActiveTrusted;
         return StateRemoteStatus::Success;
@@ -665,15 +786,12 @@ public:
         if(!current) return false;
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         for(auto& slot:_subscribers) {
-            if(!slot.Occupied) continue;
+            if(!slot.Occupied || slot.NeedsConvergence) continue;
             if(slot.SessionState==StateRemoteSessionState::ResyncRequired && slot.ResyncRequiredPending) {
                 output={slot.Requester,slot.Session,StateMessageKind::ResyncRequired,slot.LatestVersion};
                 return true;
             }
             if(!slot.Dirty) continue;
-            // The canonical capture precedes this lock. A Set may already have
-            // committed a newer version; never overwrite that marker with the
-            // stale capture or let its completion clear the newer dirty truth.
             if(slot.SessionState==StateRemoteSessionState::ActiveNoBaseline && slot.HasPendingFirstBaseline) {
                 StateStorageTraits<Value>::CopyOut(slot.ControlSnapshot.Value,snapshot.Value);
                 snapshot.TruthTime=slot.ControlSnapshot.TruthTime;
@@ -724,6 +842,7 @@ public:
         std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
         auto* slot=FindSubscriberLocked(requester);
         if(!slot) return StateRemoteStatus::NotFound;
+        slot->NeedsConvergence=false;
         slot->SessionState=StateRemoteSessionState::ResyncRequired;
         slot->ResyncRequiredPending=true;
         slot->Dirty=false;
@@ -741,6 +860,7 @@ public:
            slot->SessionState!=StateRemoteSessionState::ActiveNoBaseline &&
            slot->SessionState!=StateRemoteSessionState::ResyncRequired &&
            slot->SessionState!=StateRemoteSessionState::AwaitingResync) return StateRemoteStatus::Conflict;
+        slot->NeedsConvergence=false;
         slot->Resync=token;
         slot->ControlContinuityLost=false;
         slot->HasPendingFirstBaseline=false;
@@ -773,6 +893,7 @@ public:
             snapshot.TruthTime=slot->ControlSnapshot.TruthTime;
             return StateRemoteStatus::Success;
         }
+        slot->NeedsConvergence=false;
         slot->ResyncHighWater=token;
         slot->Resync=token;
         slot->ControlContinuityLost=false;
@@ -794,8 +915,6 @@ public:
         auto* slot=FindSubscriberLocked(requester.Device);
         if(!slot) return StateRemoteStatus::NotFound;
         if(slot->Requester!=requester || slot->Session!=session) return StateRemoteStatus::SessionMismatch;
-        // A duplicate acceptance is evidence only for its original transaction;
-        // recognizing it must not restore trust lost after that transaction.
         if(slot->LastAcceptedResync==token && slot->LastAcceptedResyncVersion==accepted) return StateRemoteStatus::Duplicate;
         if(slot->SessionState!=StateRemoteSessionState::AwaitingResync ||
            slot->Resync!=token || !slot->HasOfferedBaseline || slot->OfferedBaseline!=accepted)
@@ -807,6 +926,7 @@ public:
         slot->HasAcceptedBaseline=true;
         if(slot->LatestVersion) current=slot->LatestVersion;
         slot->LatestVersion=current;
+        slot->NeedsConvergence=false;
         slot->Dirty=current!=accepted;
         slot->SessionState=StateRemoteSessionState::ActiveTrusted;
         PreserveControlContinuity(*slot,current);
@@ -819,9 +939,19 @@ public:
         return count;
     }
     StateConvergenceBindingView<TState> ConvergenceView() noexcept {
-        return {this,[](void* p,StateVersion version) noexcept {
-            static_cast<StateRemoteReplicaTable*>(p)->MarkLatestDirty(version);
-        }};
+        return {this,
+            [](void* p,StateVersion version) noexcept {
+                static_cast<StateRemoteReplicaTable*>(p)->MarkLatestDirty(version);
+            },
+            [](void* p,const StateConvergenceHandle& handle) noexcept {
+                return static_cast<StateRemoteReplicaTable*>(p)->ReportConvergenceExhausted(handle);
+            },
+            [](void* p) noexcept {
+                return static_cast<StateRemoteReplicaTable*>(p)->RearmAvailability();
+            },
+            [](void* p,const System::DeviceIdentifier& peer,StateContinuitySide side) noexcept {
+                return static_cast<StateRemoteReplicaTable*>(p)->IsNeedsConvergence(peer,side);
+            }};
     }
 };
 

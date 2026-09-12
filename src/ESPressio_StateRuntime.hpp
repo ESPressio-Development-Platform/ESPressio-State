@@ -332,8 +332,6 @@ public:
         Detail::StateProcessTokenAuthority::Initialize();
         StateRuntimeStatus status=StateRuntimeStatus::Success;
         bool ok=true;
-        // Claims precede preparation, so rollback can never touch a Type staged
-        // by another Runtime. Own configuration stays staged for a corrected retry.
         auto claim=[&](auto tag){using C=decltype(tag);if(ok){status=StateTypeRuntime<typename C::StateType>::Get().ClaimFamily(this);ok=status==StateRuntimeStatus::Success;}};
         (claim(TConfigurations{}),...);
         if(!ok) return status;
@@ -359,8 +357,6 @@ public:
     }
     StateRuntimeStatus Shutdown() noexcept {
         if(!_initialized) return StateRuntimeStatus::NotInitialized;
-        // Close before waiting for active callers. No callback may initiate Shutdown
-        // from inside a Runtime operation whose lease it would itself need to drain.
         _closing.store(true,std::memory_order_release);
         _running.store(false,std::memory_order_release);
         (StateTypeRuntime<typename TConfigurations::StateType>::Get().RequestStop(),...);
@@ -406,7 +402,6 @@ public:
         return {StateRemoteStatus::Success,{TState::TypeId,owner,token}};
     }
 
-    /// <summary>Starts one concrete remote-owner session and emits a semantic SubscribeRequest.</summary>
     template<class TState>
     StateSubscriptionResult SubscribeFrom(const System::DeviceIdentifier& owner) noexcept {
         if(!IsRunning()) return {StateRemoteStatus::NotRunning,{}};
@@ -414,9 +409,6 @@ public:
         return StartConcreteSubscription<TState>(owner,StateSubscriptionSelectorMode::SpecificDevice);
     }
 
-    /// <summary>Expands AnyDevice locally through the bound adapter, then starts concrete owner sessions.</summary>
-    /// <remarks>No AnyDevice value is encoded on State V1 wire. Discovery must complete within the Type's
-    /// MaximumRemoteOwners capacity before any subscription request is emitted.</remarks>
     template<class TState>
     auto SubscribeAny() noexcept {
         using C=Detail::ConfigurationForT<TState,TConfigurations...>;
@@ -459,7 +451,6 @@ public:
         return result;
     }
 
-    /// <summary>Handles a later concrete-owner discovery for an already-active AnyDevice selector.</summary>
     template<class TState>
     StateSubscriptionResult ExpandAnyTo(const System::DeviceIdentifier& owner) noexcept {
         if(!IsRunning()) return {StateRemoteStatus::NotRunning,{}};
@@ -471,9 +462,6 @@ public:
         return StartConcreteSubscription<TState>(owner,StateSubscriptionSelectorMode::AnyDevice);
     }
 
-    /// <summary>Closes local admission before attempting the bounded remote Unsubscribe notification.</summary>
-    /// <remarks>Success denotes local closure. Adapter backpressure cannot keep this session active;
-    /// lost remote notification is reclaimed by the source's bounded continuity/replacement rules.</remarks>
     template<class TState>
     StateRemoteStatus Unsubscribe(const StateSubscriptionHandle& handle,StateReplicaRelease disposition) noexcept {
         if(!IsRunning()) return StateRemoteStatus::NotRunning;
@@ -484,8 +472,6 @@ public:
         if(!System::RuntimeIdentity::TryRead(requester)) return StateRemoteStatus::InvalidIdentity;
         System::DeviceRuntimeIdentity closedOwner{};
         {
-            // Hold selector ownership through replica closure: an old handle must never close a
-            // replacement session admitted for the same owner while this operation is in flight.
             std::lock_guard<System::Synchronization::Mutex> lock(_tokenMutex);
             auto& selector=Selector<TState>();
             if(!selector.Contains(handle)) return StateRemoteStatus::SessionMismatch;
@@ -494,16 +480,12 @@ public:
             (void)selector.Remove(handle);
             if(selector.Count==0 && selector.InFlight==0) selector.Mode=StateSubscriptionSelectorMode::None;
         }
-        // Before a baseline reply, the current owner incarnation is unknown. Closing locally is
-        // still required, but no invalid zero-incarnation Unsubscribe is offered to the V1 codec.
         if(!closedOwner) return StateRemoteStatus::Success;
         StateOutboundMessage<TState> request{};
         request.Kind=StateMessageKind::UnsubscribeRequest;
         request.Owner=closedOwner;
         request.Requester=requester;
         request.Session=handle.Session;
-        // The adapter borrows only the old immutable session identity, outside local locks.
-        // Its admission result is not permission to restore local subscription authority.
         (void)StateTypeRuntime<TState>::Get().AdmitOutbound(request);
         return StateRemoteStatus::Success;
     }
@@ -624,7 +606,6 @@ public:
     template<class TState> StateVersion SourceAcceptedBaseline(const System::DeviceIdentifier& requester) const noexcept { return Table<TState>().SubscriberAcceptedBaseline(requester); }
     template<class TState> std::size_t SubscribersInUse() const noexcept { return Table<TState>().SubscribersInUse(); }
 
-    /// <summary>Captures exact trusted-lineage correlation for deferred adapter gap feedback.</summary>
     template<class TState>
     StateRemoteStatus CaptureContinuity(const System::DeviceIdentifier& peer,StateContinuitySide side,
                                        StateContinuityHandle& output) const noexcept {
@@ -636,7 +617,6 @@ public:
         if(!System::RuntimeIdentity::TryRead(local)) return StateRemoteStatus::InvalidIdentity;
         return Table<TState>().CaptureContinuity(local,peer,side,output);
     }
-    /// <summary>Invalidates only the exact captured lineage and wakes bounded resync service.</summary>
     template<class TState>
     StateRemoteStatus ReportContinuityLoss(const StateContinuityHandle& handle) noexcept {
         if(!IsRunning()) return StateRemoteStatus::NotRunning;
@@ -652,10 +632,41 @@ public:
         return status;
     }
 
-    /// <summary>Offers at most one subscriber's current truth to the frozen adapter.</summary>
-    /// <remarks>The caller is the family/adapter service context. State captures one consistent
-    /// snapshot/version before selecting work. A newer Set leaves the slot dirty, so completion of
-    /// this older transfer cannot erase the newer authoritative truth.</remarks>
+    /// <summary>Records terminal adapter pursuit exhaustion for exactly one still-current State campaign.</summary>
+    /// <remarks>This path is nonblocking and stores no retry/deadline/route state. Successful exhaustion
+    /// feedback deliberately does not Wake: work remains dormant until one of the locked explicit rearm causes.</remarks>
+    template<class TState>
+    StateRemoteStatus ReportConvergenceExhausted(const StateConvergenceHandle& handle) noexcept {
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle,std::try_to_lock);
+        if(!activity) return StateRemoteStatus::Busy;
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        System::DeviceRuntimeIdentity local{};
+        if(!System::RuntimeIdentity::TryRead(local)) return StateRemoteStatus::InvalidIdentity;
+        if((StateConvergenceWorkOriginatesFromRequester(handle.Kind) && handle.Requester!=local) ||
+           (!StateConvergenceWorkOriginatesFromRequester(handle.Kind) && handle.Owner!=local))
+            return StateRemoteStatus::InvalidIdentity;
+        return Table<TState>().ReportConvergenceExhausted(handle);
+    }
+
+    /// <summary>Rearms dormant convergence exactly once for a relevant usable adapter transition.</summary>
+    /// <remarks>Unavailable transitions are informational to the adapter and do not create State retry work.
+    /// State does not retain reachability; it only consumes this explicit transition as a P2 rearm cause.</remarks>
+    template<class TState>
+    StateRemoteStatus ReportAvailabilityTransition(bool usable) noexcept {
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        std::shared_lock<System::Synchronization::ReadWriteLock> activity(_lifecycle,std::try_to_lock);
+        if(!activity) return StateRemoteStatus::Busy;
+        if(!IsRunning()) return StateRemoteStatus::NotRunning;
+        if(!usable) return StateRemoteStatus::Success;
+        if(Table<TState>().RearmAvailability()) StateTypeRuntime<TState>::Get().NotifyOutboundWork();
+        return StateRemoteStatus::Success;
+    }
+    template<class TState>
+    bool NeedsConvergence(const System::DeviceIdentifier& peer,StateContinuitySide side) const noexcept {
+        return Table<TState>().IsNeedsConvergence(peer,side);
+    }
+
     template<class TState>
     StateTransportAdmission ServiceLatest() noexcept {
         if(!IsRunning()) return {StateTransportAdmissionStatus::Quiesced};
@@ -690,12 +701,6 @@ public:
         return admitted;
     }
 
-    /// <summary>Decodes, validates and commits one Type-specific remote State message.</summary>
-    /// <remarks>The borrowed bytes are fully decoded before mutation. Success means the destination
-    /// State-family boundary has committed the applicable bounded session/replica state. Required
-    /// replies are offered only after that commit and may return TemporarilyUnavailable for retry.
-    /// All framework locks in this boundary are single nonblocking attempts against storage
-    /// resolved during Initialize. A Busy result never means NoValue or token exhaustion.</remarks>
     template<class TState,class Format>
     StateRemoteAdmissionResult AdmitRemote(const std::uint8_t* data,std::size_t size,
                                            StateValidatedIngressContext ingress) noexcept {
@@ -756,8 +761,7 @@ public:
                 StateSnapshot<TState> snapshot{};StateVersion version{};
                 if(StateTypeRuntime<TState>::Get().TryCaptureVersioned(snapshot,version)==Detail::StateCaptureStatus::Busy)
                     return {D::TemporarilyUnavailable,StateWireStatus::Success};
-                status=Table<TState>().template AcceptSubscriberEstablishment<true>(decoded.Requester,decoded.Session,
-                                                                      version);
+                status=Table<TState>().template AcceptSubscriberEstablishment<true>(decoded.Requester,decoded.Session,version);
                 break;
             }
             case StateMessageKind::SubscribeRejected: {
@@ -834,8 +838,7 @@ public:
                 StateSnapshot<TState> snapshot{};StateVersion version{};
                 if(StateTypeRuntime<TState>::Get().TryCaptureVersioned(snapshot,version)==Detail::StateCaptureStatus::Busy)
                     return {D::TemporarilyUnavailable,StateWireStatus::Success};
-                status=Table<TState>().template AcceptSubscriberResync<true>(decoded.Requester,decoded.Session,decoded.Resync,decoded.Version,
-                                                               version);
+                status=Table<TState>().template AcceptSubscriberResync<true>(decoded.Requester,decoded.Session,decoded.Resync,decoded.Version,version);
                 break;
             }
         }

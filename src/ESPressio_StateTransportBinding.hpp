@@ -49,6 +49,24 @@ struct StateOutboundMessage final {
     StateSnapshot<TState> Snapshot{};
     bool HasSnapshot=false;
     std::uint8_t ControlCode=0;
+
+    /// <summary>Returns immutable semantic correlation for an adapter-owned finite convergence campaign.</summary>
+    /// <remarks>Only work that can become bounded dormant NeedsConvergence state produces a handle.
+    /// The handle carries no attempt count, deadline, route or retry spacing and is never serialized.</remarks>
+    StateConvergenceHandle GetConvergenceHandle() const noexcept {
+        StateConvergenceHandle handle{};
+        handle.TypeId=TState::TypeId;handle.Owner=Owner;handle.Requester=Requester;
+        handle.Session=Session;handle.Resync=Resync;handle.Version=Version;
+        switch(Kind) {
+            case StateMessageKind::Publication: handle.Kind=StateConvergenceWorkKind::Publication;break;
+            case StateMessageKind::BaselineSnapshot: handle.Kind=StateConvergenceWorkKind::BaselineSnapshot;break;
+            case StateMessageKind::ResyncRequired: handle.Kind=StateConvergenceWorkKind::ResyncRequired;break;
+            case StateMessageKind::ResyncRequest: handle.Kind=StateConvergenceWorkKind::ResyncRequest;break;
+            case StateMessageKind::ResyncSnapshot: handle.Kind=StateConvergenceWorkKind::ResyncSnapshot;break;
+            default: return {};
+        }
+        return handle;
+    }
 };
 
 /// <summary>Allocation-free sink used by an AnyDevice-capable adapter to enumerate concrete owners.</summary>

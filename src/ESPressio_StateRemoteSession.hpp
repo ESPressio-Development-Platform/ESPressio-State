@@ -4,6 +4,7 @@
 #include <ESPressio_DeviceRuntimeIdentity.hpp>
 #include <ESPressio_Synchronization.hpp>
 #include "ESPressio_StateTypes.hpp"
+#include "ESPressio_StateVersion.hpp"
 
 namespace ESPressio::State {
 
@@ -49,6 +50,57 @@ struct StateContinuityHandle final {
     constexpr explicit operator bool() const noexcept { return TypeId && Owner && Requester && Session &&
         (Side==StateContinuitySide::SourceSubscriber || Side==StateContinuitySide::RemoteOwner); }
 };
+
+/// <summary>Semantic State work whose finite transport pursuit may later exhaust.</summary>
+/// <remarks>This is family correlation only. Attempt counters, deadlines, routes and retry spacing
+/// remain adapter-owned P2 campaign state and are never stored in this value.</remarks>
+enum class StateConvergenceWorkKind : std::uint8_t {
+    Invalid=0,
+    Publication,
+    BaselineSnapshot,
+    ResyncRequired,
+    ResyncRequest,
+    ResyncSnapshot
+};
+constexpr bool IsValidStateConvergenceWorkKind(StateConvergenceWorkKind kind) noexcept {
+    return kind==StateConvergenceWorkKind::Publication ||
+           kind==StateConvergenceWorkKind::BaselineSnapshot ||
+           kind==StateConvergenceWorkKind::ResyncRequired ||
+           kind==StateConvergenceWorkKind::ResyncRequest ||
+           kind==StateConvergenceWorkKind::ResyncSnapshot;
+}
+constexpr bool StateConvergenceWorkOriginatesFromRequester(StateConvergenceWorkKind kind) noexcept {
+    return kind==StateConvergenceWorkKind::ResyncRequest;
+}
+/// <summary>Immutable adapter feedback correlation for one admitted State convergence campaign.</summary>
+/// <remarks>It is never serialized. Version and resync-token fields are required only for the
+/// work kinds that semantically own them. A stale handle must never mutate a replacement session
+/// or a newer authoritative fact.</remarks>
+struct StateConvergenceHandle final {
+    StateTypeId TypeId{};
+    StateConvergenceWorkKind Kind=StateConvergenceWorkKind::Invalid;
+    System::DeviceRuntimeIdentity Owner{},Requester{};
+    StateSessionToken Session{};
+    StateResyncToken Resync{};
+    StateVersion Version{};
+    constexpr explicit operator bool() const noexcept {
+        if(!TypeId || !Owner || !Requester || !Session || !IsValidStateConvergenceWorkKind(Kind)) return false;
+        switch(Kind) {
+            case StateConvergenceWorkKind::Publication:
+            case StateConvergenceWorkKind::BaselineSnapshot:
+            case StateConvergenceWorkKind::ResyncRequired:
+                return bool(Version) && !Resync;
+            case StateConvergenceWorkKind::ResyncRequest:
+                return bool(Resync) && !Version;
+            case StateConvergenceWorkKind::ResyncSnapshot:
+                return bool(Resync) && bool(Version);
+            case StateConvergenceWorkKind::Invalid:
+                break;
+        }
+        return false;
+    }
+};
+
 struct StateRemoteResyncWork final {
     System::DeviceRuntimeIdentity Owner{};
     StateSessionToken Session{};
