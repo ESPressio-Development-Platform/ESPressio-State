@@ -1,252 +1,249 @@
 # ESPressio State
 
-## Primitives redesign status
+`ESPressio-State` provides deterministic latest-truth State primitives for the ESPressio platform. The `primitives_redesign` architecture owns canonical State values inside fixed `StateTypeRuntime<T>` cells, grants mutation through one move-only `StateOwner<T>`, uses immutable copy-out `StateSnapshot<T>` reads, and composes asynchronous observation through the common Threads capability model.
 
-The `primitives_redesign` branch is an **incomplete typed-runtime migration**. Use
-`ESPressio_States.hpp` for the new surface. The predecessor documentation below
-has not yet passed the S5-23 rewrite gate and must not be used as the typed API contract.
+This branch is the architecture-reset implementation. The package version is intentionally unchanged while the redesign tranche is being integrated.
 
-The current subscription surface closes local admission immediately when an explicit
-`Unsubscribe(handle, disposition)` succeeds. Remote notification is a bounded attempt:
-adapter backpressure does not restore the session. A known owner incarnation is preserved
-in that notification; when the owner incarnation has not yet been learned, closure is local.
-`RetainLastKnown` preserves the immutable snapshot and its slot; `ReleaseReplica` releases it.
-`ForgetRemote` accepts only an inactive replica. Session and resynchronization tokens come
-from one process-wide, non-resettable authority shared by all State Runtime Type packs.
+## State tiers
 
-See [STATE_CONTINUATION_CHECKPOINT.md](STATE_CONTINUATION_CHECKPOINT.md) for the
-validated scope and remaining implementation gates. No State tranche completion is claimed.
-
-Strongly typed authoritative-fact and replication infrastructure for the ESPressio Development Platform.
-
-ESPressio State represents **what is true now**. It is deliberately distinct from Command (asynchronous intent) and Event (occurrence/history). Intermediate State revisions may be coalesced because the latest authoritative fact is the semantic result.
-
-This propagation branch implements the platform structural realignment toward the true baseline. Package version fields are intentionally not changed by this tranche.
-
-## Identity
-
-State is assigned stable primitive family `StateFamilyId` (`0x0004`).
-
-State uses the canonical permanent `ESPressio::System::DeviceIdentifier`; it does not own or derive a second device identity and contains no MAC/radio identity semantics.
-
-One State is addressed by:
+Every State definition is a compile-time Type with a non-zero `StateTypeId` and a static `CanonicalName`.
 
 ```cpp
-StateAddress {
-    DeviceIdentifier Device;
-    StateTypeId TypeId;
-}
-```
-
-There is no separate `SourceIdentifier`. Multiple semantic values on one device use different State definitions / `StateTypeId` values.
-
-## State definitions
-
-```cpp
-struct TemperatureState {
-    using Value = float;
-    static constexpr ESPressio::State::StateTypeId Id = 0x1001;
+struct TemperatureState final
+    : ESPressio::State::State<TemperatureState, float> {
+    static constexpr ESPressio::State::StateTypeId TypeId{0x1001};
+    static constexpr std::string_view CanonicalName="App.State.Temperature";
 };
-
-using DeviceStateContract = ESPressio::State::StateContract<TemperatureState>;
 ```
 
-`StateContract<...>` provides a compile-time closed set for typed publishers, replicas, subscriptions and optional introspection. `StateTag<TDefinition>` preserves semantic identity even where several State definitions share the same C++ value type.
+Three tiers are available:
 
-## Authoritative local State
+- `State<TDerived,TValue>` — local latest-truth State.
+- `SerializableState<TDerived,TValue>` — local State whose bounded P3 schema can be serialized for diagnostics, persistence and dynamic read tooling.
+- `TransmissibleState<TDerived,TValue>` — Serializable State plus distributed session/version/provenance semantics and a finite P2 `ConvergencePolicy` Type.
 
-Application/domain objects remain the authority for local State. `StatePublisher` and its `LocalStateRegistry` do not own a second canonical value repository: they retain only typed non-owning references plus registration epoch/revision metadata.
+State values must satisfy deterministic bounded `StateStorageTraits`. Serializable and Transmissible values additionally require a bounded ESPressio-Serializable schema.
 
-```cpp
-float temperature = sensor.Temperature();
-StatePublisher<DeviceStateContract> publisher(localDevice);
+## Runtime, ownership and reads
 
-publisher.Bind<TemperatureState>(temperature);
-```
-
-The application mutates its own authoritative member and then explicitly declares the semantic change:
+A `State::Runtime<TypeConfiguration<...>>` freezes the Type set and all capacities before `Start()`. Runtime occupancy may change inside those fixed capacities, but topology does not resize after initialization.
 
 ```cpp
-temperature = sensor.Temperature();
-publisher.NotifyChanged<TemperatureState>();
-```
+using namespace ESPressio;
+namespace S=ESPressio::State;
 
-`NotifyChanged` is the authoritative publication boundary. It advances that State registration's revision regardless of equality policy, captures one immutable typed `StateUpdate`, and synchronously notifies transport/application observers. Direct local reads continue to dereference the application-owned source rather than a shadow copy.
+Primitive::TypeDirectory<1> directory;
+directory.Register<TemperatureState>();
+directory.Initialize();
 
-Initial binding establishes revision 1. If a binding is removed with `StateUnbindMode::Retain`, its epoch/revision lineage remains inactive and a later rebind advances the existing revision before the replacement source becomes visible. This prevents one epoch/revision pair from ever denoting two different values. `StateUnbindMode::Discard` terminates the lineage so the next bind begins a new epoch at revision 1.
+S::Runtime<S::TypeConfiguration<TemperatureState>> states;
+auto owner=states.BindOwner<TemperatureState>();
+states.Initialize(directory.View());
+states.Start();
 
-```cpp
-publisher.Unbind<TemperatureState>(StateUnbindMode::Retain);
-publisher.Bind<TemperatureState>(temperature);   // same epoch, next revision
+owner.Set(21.5f);
 
-publisher.Unbind<TemperatureState>(StateUnbindMode::Discard);
-publisher.Bind<TemperatureState>(temperature);   // new epoch, revision 1
-```
-
-Unbinding also emits authoritative `Unavailable / SourceUnbound`; binding emits authoritative `Available`. Availability lifecycle is separate from value publication.
-
-`Snapshot<TDefinition>()` reads the current bound value and current epoch/revision without advancing either. It is intended for initial subscription establishment and resynchronisation.
-
-`StatePublisher<TContract, TMaximumObservers>` has a finite observer-registration capacity; the default is 8 simultaneous registrations. Capacity is independent of the State contract's number of definitions. A contract observer registered against several typed interfaces still consumes one registration.
-
-Same-State publication notification is non-reentrant. If an observer synchronously mutates the same authoritative State and calls `NotifyChanged` again, the nested call commits its revision but does not recursively enter observers. StatePublisher retains at most one externally-preferred immutable deferred snapshot for that State and dispatches it after the active notification returns. Further changes before deferred dispatch replace that pending snapshot with the newest revision, so obsolete intermediate revisions may be coalesced while emitted revisions remain strictly increasing. This is intentional latest-fact behavior; use Event/stream semantics when every transition must be preserved.
-
-A State-definition-specific `StateComparison<TDefinition>` remains available for application/domain code or higher-level State value wrappers that want semantic equality/deadband behavior before deciding whether to call `NotifyChanged`. Reference-backed State deliberately does not retain a hidden shadow value merely to perform equality suppression.
-
-## Remote replicas
-
-Remote values are State-owned and bounded by the manager capacity:
-
-```cpp
-RemoteStateManager<DeviceStateContract, 8> remoteState;
-```
-
-A received authoritative publication is applied with its independent State epoch and monotonic revision:
-
-```cpp
-remoteState.Apply<TemperatureState>(
-    sourceDevice,
-    epoch,
-    revision,
-    temperature
-);
-```
-
-Older or duplicate revisions cannot overwrite newer retained State. `StateEpoch` defines a State publication lineage and is intentionally independent of any Mesh membership incarnation.
-
-Reads return stable snapshots rather than pointers into mutable replica storage:
-
-```cpp
-RemoteStateSnapshot<float> snapshot;
-if (remoteState.Read<TemperatureState>(sourceDevice, snapshot) && snapshot.HasValue) {
-    // snapshot.Value
-    // snapshot.Epoch
-    // snapshot.Revision
-    // snapshot.Availability
-    // snapshot.Reachability
+S::StateSnapshot<TemperatureState> snapshot{};
+if(states.TryRead(snapshot)) {
+    // snapshot.Value and snapshot.TruthTime are an immutable copy of one fact.
 }
 ```
 
-## Availability and reachability
+Exactly one owner capability may ever be bound for a State Type in one runtime incarnation. Binding the owner does not create a State fact. `Set()` prepares candidate storage first, compares against current truth, and then commits Value and qualified TruthTime atomically under the State synchronization boundary.
 
-State availability and source reachability are separate concepts.
+`StateComparison<TState>` controls authoritative owner equality. An equal/deadband candidate is a strict no-op: it does not update TruthTime, consume a compact version, wake observers, write persistence or create convergence work. Remote replica admission does not re-run the owner's semantic comparison; remote ordering follows the authenticated session/version contract.
 
-Authoritative State availability is one of:
+`Set(value)` captures qualified System Clock time. `Set(value, truthTime)` accepts an explicitly supplied `Timing::QualifiedTime`. No mutable canonical pointer/reference is exposed.
 
-```text
-Available
-Stale
-Unavailable
-Expired
-```
+## Local observation: TH10 capability
 
-Unavailable reasons currently include `SourceUnbound` and `SourceUnreachable`. Device reachability is tracked independently as `Unknown`, `Reachable`, `Stale` or `Unreachable`.
-
-`RemoteStateManager` combines the authoritative State status with current reachability to produce the effective `StateAvailabilityStatus` returned to consumers. For example, an otherwise Available State becomes effectively `Unavailable / SourceUnreachable` while its authoritative device is unreachable. Reachability changes also produce per-State effective availability transitions for retained State identities.
-
-Authoritative availability received from the State source is applied independently:
+State mutation never invokes application code. `ObserverCapability<TStates...>` registers a frozen target-local observation index for each watched Type. A meaningful commit only sets the corresponding atomic pending bit and uses the owning Thread's common coalescing wake.
 
 ```cpp
-remoteState.ApplyAvailability<TemperatureState>(
-    sourceDevice,
-    StateAvailability::Unavailable,
-    StateAvailabilityReason::SourceUnbound
-);
+class StateWorker final
+    : public Threads::ThreadWith<S::ObserverCapability<TemperatureState>> {
+    using Observer=S::ObserverCapability<TemperatureState>;
+public:
+    StateWorker() {
+        GetCapability<S::ObserverCapabilityTag>()
+            .OnChange(*this,&StateWorker::OnStateChanged);
+    }
+    ~StateWorker() override { (void)Shutdown(); }
+private:
+    void OnStateChanged(const S::StateChangeSet& changes) {
+        if(changes.Contains<TemperatureState>()) {
+            S::StateSnapshot<TemperatureState> current{};
+            // Read current latest truth from the State Runtime here.
+        }
+    }
+};
 ```
 
-Transport/Mesh integration reports source reachability separately:
+Multiple commits before service coalesce into one identity bit. No State value is queued with the notification. A change racing during the application callback republishes the bit for a later service quantum. Pause preserves pending identity; quiescence detaches the producer target.
+
+## Serializable State and dynamic tooling
+
+P1 `Primitive::TypeDirectory` remains immutable metadata. Its State family extension exposes tier, schema, bounded wire maxima, convergence-policy metadata and resource facts. It is not a mutable service locator.
+
+`ReadDynamicState()` provides bounded local P3 serialization. `StateIntrospection<TStates...>` provides frozen static dispatch for tooling: metadata enumeration, bounded dynamic remote reads and retained remote-owner enumeration. Runtime current values are copied from canonical/replica storage; they are never stored inside the Type Directory.
+
+There is deliberately no generic `SetByTypeId`. Dynamic Console/Web/Lua/GUI surfaces remain read-only unless application behavior is exposed through an explicitly authorized Command/API path.
+
+## Persistent authoritative State
+
+`StatePersistenceBinding<TState,Format>` binds a bounded P4 atomic-record store before Runtime initialization. For changed `Set()` operations, durable replacement succeeds before the canonical RAM/version commit. A persistence failure therefore leaves the previous RAM fact, TruthTime and compact version untouched and emits no observation or convergence work.
+
+Restore preserves the original qualified TruthTime but starts a fresh runtime lineage at phase 0 / revision 1. Live remote sessions, trusted baselines and observer/network side effects are never restored.
+
+## Transmissible State
+
+A Transmissible State adds a bounded P2 convergence policy:
 
 ```cpp
-remoteState.SetReachability(
-    sourceDevice,
-    StateSourceReachability::Unreachable
-);
+struct PositionPolicy final {
+    using PolicyCategory=Primitive::StateConvergencePolicyTag;
+    using RequiredEvidence=Primitive::DestinationPrimitiveAdmission;
+    using Supersession=Primitive::LatestAuthoritativeValue;
+    using ExhaustionDisposition=Primitive::DormantNeedsConvergence;
+    static constexpr std::uint64_t MaximumResidenceNanoseconds=1000000000ULL;
+    static constexpr std::uint64_t MaximumAdapterAdmissionWaitNanoseconds=1000000ULL;
+    static constexpr std::uint16_t MaximumAttempts=3;
+    static constexpr std::uint64_t MinimumRetrySpacingNanoseconds=1000ULL;
+    static constexpr std::uint64_t MaximumRetrySpacingNanoseconds=1000000ULL;
+};
 ```
 
-## Observation
-
-Core State lifecycle notification uses ESPressio Observable. The publisher exposes distinct local observations for source binding/unbinding, authoritative availability changes, generic committed publications, and typed committed `StateUpdate` snapshots.
-
-Observer registration is explicitly bounded rather than relying on the general Observable registry as an implicit memory limit. `StatePublisher`, `RemoteStateManager`, `StateSubscriptionRegistry`, `StateSubscriberRegistry`, and the optional `RemoteStateObserverThread` each accept an independent compile-time maximum observer count, defaulting to 8 while preserving their separate data-capacity dimensions. Registration order remains the deterministic callback order supplied by ESPressio Observable.
-
-The remote manager exposes distinct observations for:
-
-- accepted/rejected remote revisions;
-- effective State availability changes keyed by `StateAddress`;
-- source-device reachability changes;
-- remote-device discovery/registration.
-
-Typed remote value observers receive the current effective `StateAvailabilityStatus` alongside epoch/revision information.
-
-The optional `ESPressio_RemoteStateObserverThread.hpp` layer coalesces dirty identities and moves application observer execution onto an ESPressio Threads execution context. Its bookkeeping remains bounded by the manager/device/contract capacities. State, availability and reachability remain separately observable there as well.
-
-## Subscriptions
-
-`StateSubscriptionRegistry<TCapacity>` records State this device wishes to consume. A subscription can target one State definition from any device or from one specific canonical DeviceIdentifier.
-
-`StateSubscriberRegistry<TContract, TMaximumSubscribers>` records remote devices consuming authoritative State from this device.
-
-Transport adapters are responsible for enforcing subscription/admission policy before mutating a remote replica.
-
-## Transport protocol
-
-State owns a compact transport-independent family protocol containing:
-
-```text
-Publication
-Availability
-Subscribe
-Unsubscribe
-Resynchronize
-SubscribeResult
-UnsubscribeResult
-```
-
-There is deliberately no baseline replica acknowledgement and no generic disconnect message. State replication is asynchronous latest-authoritative-fact propagation rather than RPC/reliable-history delivery.
-
-`Publication` carries canonical source DeviceIdentifier, StateTypeId, StateEpoch, StateRevision and the encoded typed value. `Availability` separately carries canonical State identity plus authoritative `StateAvailability` and `StateAvailabilityReason`. Reachability is not encoded as authoritative State because it is derived from the active transport/Mesh context.
-
-`Resynchronize` asks for the current authoritative fact; it does not request historical replay.
-
-`StateCodec<TDefinition>` is the typed payload codec boundary. The default implementation supports suitable trivially-copyable values; richer State definitions can specialize the codec.
-
-## Latest-only outbound work
-
-`StatePublicationTracker<TDefinition>` retains at most the newest committed outbound publication for one destination. A newer epoch/revision replaces older pending work. There is no acknowledgement lifecycle in the tracker.
-
-This allows State transport to coalesce obsolete intermediate revisions while preserving the latest authoritative value.
-
-## Optional introspection and diagnostic serialization
-
-Core State identity is numeric and does not require names. Applications that need human-readable diagnostics can opt into:
+The application declares fixed remote-owner and source-subscriber capacities:
 
 ```cpp
-#include <ESPressio_StateIntrospection.hpp>
-#include <ESPressio_StateSerialization.hpp>
+using PositionConfig=S::TypeConfiguration<
+    PositionState,
+    S::MaximumRemoteOwners<4>,
+    S::MaximumSubscribers<8>>;
 ```
 
-A definition may expose an optional diagnostic `Name`; that name never participates in State identity or wire addressing.
+Remote-owner storage is per Type, not a device x whole-contract matrix. Capacity exhaustion rejects new semantic occupancy; existing slots are never silently evicted.
 
-Diagnostic serialized snapshots include canonical DeviceIdentifier, StateTypeId, optional name, epoch/revision, effective State availability, source reachability and a bounded encoded payload.
+### Subscription selectors
 
-These optional headers do not establish a second transport protocol.
+`SubscribeFrom<T>(device)` creates a SpecificDevice session. `SubscribeAny<T>()` asks the bound adapter to enumerate concrete owners locally and starts one normal concrete session per discovered device. `AnyDevice` is not a State wire broadcast.
+
+Session tokens are process-wide monotonic non-zero tokens and are not reused. `Unsubscribe(handle, RetainLastKnown)` closes the session while retaining the last replica. `ReleaseReplica` frees the replica only after the local session is inactive.
+
+`TryReadRemote<T>(owner,snapshot)` and `GetRemoteSessionStatus<T>(owner)` intentionally answer different questions. A retained last-known `{Value,TruthTime}` remains readable while a session is resynchronizing, closed or retained after unsubscribe. Reachability/link condition belongs to Mesh/Radio/adapters and is not synthesized as State availability, staleness or expiry.
+
+### Baseline and compact ordering
+
+A new session establishes a trusted full baseline before ordinary compact publications are accepted. If the source has no fact, the session becomes `ActiveNoBaseline`; the first later fact is sent as a full `BaselineSnapshot` and must be accepted before compact publication begins.
+
+Within one owner RuntimeIncarnation, State uses a one-bit phase plus `uint16_t` revision. Full snapshot/resync control re-establishes trust when compact ordering cannot be proven. Runtime incarnation identity prevents reboot lineage from being mistaken for continuation.
+
+### Exact V1 wire prefixes
+
+Canonical State V1 uses little-endian fixed prefixes:
+
+| Message representation | Prefix bytes |
+|---|---:|
+| Publication | 73 |
+| Common session/control | 62 |
+| Snapshot control | 78 |
+| Acceptance control | 65 |
+
+Payload bytes use bounded ESPressio-Serializable P3 formats. Native-object `memcpy` is not a State wire codec.
+
+Every production remote admission also carries validated original-source provenance supplied by the adapter/security/session layer. State cross-checks semantic owner/requester identity before mutating session/replica state. An immediate relay is never automatically treated as the State owner.
+
+## Adapter boundary and convergence
+
+`StateTransportBinding<TState,Format>` is the frozen family-to-adapter seam. `Admit()` is only a bounded nonblocking transfer of semantic work ownership. The adapter must retain/copy anything it needs before returning `Accepted`; it must not wait for physical capacity, invoke application callbacks, or re-enter State mutation/lifecycle APIs from that call.
+
+State owns semantic latest-truth/session/version decisions. Adapters own physical byte leases, routes, attempt counts, residence deadlines, retry spacing and lower-layer admission evidence.
+
+When an adapter's finite campaign exhausts, it reports a `StateConvergenceHandle` back through Runtime service context. State stores only one bounded dormant `NeedsConvergence` bit for the exact still-current owner/requester/session/version/resync work. A stale feedback handle cannot dormant newer work. Pursuit is rearmed only by a newer authoritative commit, a relevant adapter availability transition, or explicit resync/continuity action. State has no periodic anti-entropy timer and no per-Type retry task.
+
+Continuity-loss feedback is similarly correlated to exact identities, session and last accepted resync lineage. Last-known replica reads remain independent of recovery state.
+
+## Runtime identity projection
+
+`DeviceRuntimeIncarnationState` is an optional read-only Transmissible State owned by ESPressio-State. It projects the already-installed System `RuntimeIncarnationId` downward-to-upward without making System depend on State and exposes no application `StateOwner`.
+
+## Resource accounting
+
+`ESPressio_StateResources.hpp` reports target-specific compile-time footprints. The values are real `sizeof` results for the active compiler/target or explicit capacity multiplications; there is no hidden heap allowance.
+
+```cpp
+using Config=S::TypeConfiguration<
+    PositionState,
+    S::MaximumRemoteOwners<4>,
+    S::MaximumSubscribers<8>>;
+using Resources=S::StateRuntimeResourceAccounting<Config>;
+
+constexpr auto position=S::StateDeploymentResources<Config>();
+static_assert(position.RemoteOwnerCapacity==4);
+static_assert(position.SubscriberCapacity==8);
+
+using ObserverResources=S::StateObserverResourceAccounting<PositionState>;
+```
+
+Per-Type accounting reports the P1 directory-entry footprint, static State descriptor footprint, value/snapshot and `StateTypeRuntime` sizes, one observer-relation node, remote-owner/subscriber slot sizes and reserved-capacity products, complete remote table and selector object sizes, and optional DirectBinary persistence/transport binding costs. Runtime accounting reports `sizeof(Runtime<...>)`, State P1 entry reservation and process-wide session/resync token-authority static storage. Observer accounting reports the concrete capability size, registration-node bytes, pending bitmap, framework stack floor and external-storage requirement.
+
+Component fields may overlap aggregate object sizes; do not add them unless the field explicitly represents a reserved/total value. Platform/provider control blocks outside these C++ objects require separate provider evidence.
+
+## Lifecycle and concurrency boundaries
+
+Initialization claims each configured Type and freezes bindings transactionally. Another Runtime cannot prepare or roll back a Type owned by the first. Start validates frozen observer/adapter topology. Shutdown closes new activity, takes the Runtime lifecycle gate exclusively, drains in-progress State operations, detaches borrowed bindings, closes sessions/selectors and retains canonical/remote snapshots for read-only post-shutdown inspection.
+
+Remote ingress uses nonblocking lifecycle/table/token/selector acquisition and returns typed temporary-unavailable/capacity results instead of blocking an adapter receive context. Local authoritative `Set()` may use the normal short State synchronization path but never waits for transport convergence or application callbacks.
+
+## Removed predecessor architecture
+
+The V1 reset intentionally contains no compatibility aliases for the former architecture. These concepts are absent:
+
+- `LocalStateRegistry`
+- `StatePublisher`
+- `RemoteStateManager`
+- `RemoteStateObserverThread`
+- `StateAvailability` / State-owned reachability or expiry
+- `StateEpoch` / `StateRuntimeEpoch`
+- `StateCodec`
+- device x full-State-contract replica matrices
+- Observable-based State publication callbacks
+- native-layout State wire serialization
+
+Tests contain configure-time guards preventing those headers/symbols from silently returning.
 
 ## Dependencies
 
-Mandatory State dependencies on this propagation branch are:
+ESPressio-State's direct `primitives_redesign` dependencies are:
 
-```text
-ESPressio-System     structural_realignment_propagation_ESPressio-Mesh
-ESPressio-Primitive  structural_realignment_propagation_ESPressio-Mesh
-ESPressio-Observable structural_realignment
-```
+- ESPressio-System
+- ESPressio-Primitive
+- ESPressio-Threads
+- ESPressio-Timing
+- ESPressio-Serializable
+- ESPressio-Persistence
 
-ESPressio Threads is optional and required only by the optional deferred observer execution layer. Event, Mesh, MeshAdapters, Serial, Web and concrete transports remain above or beside State and are not mandatory State-core dependencies.
+State has no canonical Observable dependency. Timing currently declares Observable for its own SystemClock observer API; raw host test harnesses therefore supply that transitive include separately.
 
-This preserves dependency direction: State knows nothing about Mesh transport identities, routing, radios or authenticated membership context.
+## Examples
 
-## Integration boundary
+The `examples/` directory contains focused V1 examples:
 
-Mesh integration belongs in `ESPressio-MeshAdapters`, not in State core. The State Mesh adapter is responsible for validating that a received State address's `DeviceIdentifier` equals the authenticated Mesh source before the publication/availability is accepted by State.
+- `LocalOwnedState`
+- `EqualValueNoOp`
+- `ExplicitTruthTime`
+- `ReadStateSnapshot`
+- `StateObserverThreadComposition`
+- `SerializableStateRead`
+- `TransmissibleStateRuntime`
+- `SubscribeFromDevice`
+- `SubscribeAnyDevice`
+- `RetainLastKnownAndReleaseReplica`
+- `PersistentAuthoritativeState`
+- `StateDynamicRead`
 
-State therefore remains transport-independent while retaining authoritative source identity and typed replication semantics.
+The examples illustrate State-family semantics only. A production Transmissible deployment supplies a real adapter implementation in the later ESPressio-Adapters integration tranche; the State examples use small bounded mock bindings where transport behavior must be demonstrated.
+
+## Validation
+
+The branch CI builds the typed surface with C++17, `-fno-rtti`, warnings-as-errors host contracts, negative compile contracts and an ESP32 PlatformIO compile. Coverage includes owner uniqueness/move semantics, strict equal/deadband no-op, observer coalescing races, persistence-before-RAM, compact double wrap, session/baseline/resync ordering, exact V1 wire sizes, validated provenance, nonblocking family admission, shutdown/lifetime drain, continuity and convergence feedback, bounded local/remote dynamic tooling, remote non-callback behavior, predecessor eradication and resource-accounting formulas.
