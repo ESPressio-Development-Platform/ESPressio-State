@@ -236,6 +236,29 @@ public:
         slot->SessionState=StateRemoteSessionState::AwaitingResync;
         return StateRemoteStatus::Success;
     }
+    /// <summary>Starts a wire-requested resync only for the exact live owner session.</summary>
+    /// <remarks>Validate identity and allocate the fresh retry token in the same table transaction.
+    /// A delayed control must neither invalidate a replacement session nor revive a closed one.
+    /// Exhaustion leaves the current baseline and outstanding resync token untouched.</remarks>
+    StateRemoteStatus BeginRemoteResync(const System::DeviceRuntimeIdentity& owner,StateSessionToken session,
+                                       StateResyncToken& token) noexcept {
+        if(!owner || !session) return StateRemoteStatus::InvalidIdentity;
+        std::lock_guard<System::Synchronization::Mutex> lock(_mutex);
+        auto* slot=FindOwnerLocked(owner.Device);
+        if(!slot) return StateRemoteStatus::NotFound;
+        if(slot->Owner!=owner || slot->Session!=session) return StateRemoteStatus::SessionMismatch;
+        if(slot->SessionState!=StateRemoteSessionState::ActiveTrusted &&
+           slot->SessionState!=StateRemoteSessionState::ActiveNoBaseline &&
+           slot->SessionState!=StateRemoteSessionState::ResyncRequired &&
+           slot->SessionState!=StateRemoteSessionState::AwaitingResync)
+            return StateRemoteStatus::SessionMismatch;
+        StateResyncToken fresh{};
+        if(!Detail::StateProcessTokenAuthority::TryAllocate(fresh)) return StateRemoteStatus::TokenExhausted;
+        slot->Resync=fresh;
+        slot->SessionState=StateRemoteSessionState::AwaitingResync;
+        token=fresh;
+        return StateRemoteStatus::Success;
+    }
     StateRemoteStatus InstallResyncSnapshot(const System::DeviceRuntimeIdentity& owner,StateSessionToken session,StateResyncToken token,
                                             StateVersion version,const StateSnapshot<TState>& snapshot) noexcept {
         if(!owner || !session || !token || !version) return StateRemoteStatus::InvalidIdentity;
@@ -368,7 +391,9 @@ public:
         if(slot->SessionState!=StateRemoteSessionState::Establishing) return StateRemoteStatus::Conflict;
         slot->HasAcceptedBaseline=slot->HasOfferedBaseline;
         slot->AcceptedBaseline=slot->HasOfferedBaseline?slot->OfferedBaseline:StateVersion{};
-        slot->Dirty=slot->HasOfferedBaseline && current!=slot->OfferedBaseline;
+        // NoValue is a handshake result, not evidence for a fact committed while
+        // establishment was in flight. That first fact still needs a baseline.
+        slot->Dirty=bool(current) && (!slot->HasOfferedBaseline || current!=slot->OfferedBaseline);
         slot->LatestVersion=current;
         slot->SessionState=slot->HasOfferedBaseline?StateRemoteSessionState::ActiveTrusted:StateRemoteSessionState::ActiveNoBaseline;
         return StateRemoteStatus::Success;
@@ -428,6 +453,11 @@ public:
         auto* slot=FindSubscriberLocked(requester.Device);
         if(!slot) return StateRemoteStatus::NotFound;
         if(slot->Requester!=requester || slot->Session!=session) return StateRemoteStatus::SessionMismatch;
+        // Ordinary acceptance has no resync token. Only the matching ResyncAccepted
+        // transaction can restore trust once continuity has been invalidated.
+        if(slot->SessionState!=StateRemoteSessionState::ActiveTrusted &&
+           slot->SessionState!=StateRemoteSessionState::ActiveNoBaseline)
+            return StateRemoteStatus::SessionMismatch;
         if(slot->SessionState==StateRemoteSessionState::ActiveTrusted && slot->HasAcceptedBaseline &&
            slot->AcceptedBaseline==version) {
             slot->Dirty=bool(slot->LatestVersion) && slot->LatestVersion!=version;

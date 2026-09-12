@@ -667,12 +667,10 @@ public:
                 status=Table<TState>().AcceptSubscriberBaseline(decoded.Requester,decoded.Session,decoded.Version);
                 break;
             case StateMessageKind::ResyncRequired: {
-                status=Table<TState>().RequireResync(decoded.Owner.Device);
-                if(status!=StateRemoteStatus::Success) break;
                 StateResyncToken token{};
-                if(!Detail::StateProcessTokenAuthority::TryAllocate(token))
+                status=Table<TState>().BeginRemoteResync(decoded.Owner,decoded.Session,token);
+                if(status==StateRemoteStatus::TokenExhausted)
                     return {D::ResourceUnavailable,StateWireStatus::Success};
-                status=Table<TState>().BeginResync(decoded.Owner.Device,token);
                 if(status!=StateRemoteStatus::Success) break;
                 reply.Kind=StateMessageKind::ResyncRequest;reply.Resync=token;
                 return {OfferReply(reply),StateWireStatus::Success};

@@ -67,6 +67,22 @@ int main(){
     assert(runtime.BindTransport(binding)==S::StateRuntimeStatus::Success);
     assert(runtime.Initialize(directory.View(),&Capture)==S::StateRuntimeStatus::Success);
     assert(runtime.Start()==S::StateRuntimeStatus::Success);
+    // A first fact committed between SubscribeNoValue and SubscribeAccepted must
+    // remain eligible for the first protected baseline once establishment finishes.
+    S::StateRemoteReplicaTable<RuntimeState,0,1> emptyHandshake;
+    assert(emptyHandshake.ReserveSubscriber(remoteRequester,S::StateSessionToken{90})==S::StateRemoteStatus::Success);
+    assert(emptyHandshake.OfferSubscriberBaseline(remoteRequester,S::StateSessionToken{90},false)==S::StateRemoteStatus::Success);
+    emptyHandshake.MarkLatestDirty({false,1});
+    assert(emptyHandshake.AcceptSubscriberEstablishment(remoteRequester,S::StateSessionToken{90},{false,1})==S::StateRemoteStatus::Success);
+    assert(emptyHandshake.SubscriberDirty(remoteRequester.Device));
+    S::StateSourceWork firstBaseline{};
+    assert(emptyHandshake.TryPrepareLatest({false,1},firstBaseline));
+    assert(firstBaseline.Kind==S::StateMessageKind::BaselineSnapshot);
+    assert(emptyHandshake.BeginSubscriberResync(remoteRequester,S::StateSessionToken{90},S::StateResyncToken{12},{false,1})==S::StateRemoteStatus::Success);
+    // An ordinary ACK has no resync token and cannot complete even the same-version resync.
+    assert(emptyHandshake.AcceptSubscriberBaseline(remoteRequester,S::StateSessionToken{90},{false,1})==S::StateRemoteStatus::SessionMismatch);
+    assert(emptyHandshake.SubscriberState(remoteRequester.Device)==S::StateRemoteSessionState::AwaitingResync);
+
     assert(owner.Set({10},{100,Timing::TimeReliability::Synchronized})==S::StateSetStatus::Changed);
 
     // Source side: a validated SubscribeRequest reserves bounded state and captures one atomic baseline.
@@ -138,6 +154,22 @@ int main(){
     // ResyncRequired allocates a fresh requester token and a matching snapshot commits/re-acks idempotently.
     S::StateControlWireHeader required{S::StateMessageKind::ResyncRequired,RuntimeState::TypeId,
         remoteOwner,local,session.Handle.Session,{},0};
+    // Valid provenance alone is insufficient: delayed controls from an old session or
+    // incarnation must not invalidate the replacement session or emit a resync request.
+    const auto admissionsBeforeStale=adapter.Admissions;
+    auto staleRequired=required;
+    staleRequired.Session=S::StateSessionToken{session.Handle.Session.Value()+1};
+    encoded=S::EncodeStateControl(staleRequired,bytes.data(),bytes.size());assert(encoded);
+    admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteOwner});
+    assert(admitted.Disposition==Primitive::PrimitiveAdmissionDisposition::Rejected);
+    staleRequired=required;
+    staleRequired.Owner.Incarnation=System::RuntimeIncarnationId{1};
+    encoded=S::EncodeStateControl(staleRequired,bytes.data(),bytes.size());assert(encoded);
+    admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{staleRequired.Owner});
+    assert(admitted.Disposition==Primitive::PrimitiveAdmissionDisposition::Rejected);
+    assert(adapter.Admissions==admissionsBeforeStale);
+    assert(runtime.GetRemoteSessionStatus<RuntimeState>(remoteOwner.Device)==S::StateRemoteSessionState::ActiveTrusted);
+    assert(runtime.TryReadRemote<RuntimeState>(remoteOwner.Device,read) && read.Value.Value==21);
     encoded=S::EncodeStateControl(required,bytes.data(),bytes.size());assert(encoded);
     admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteOwner});assert(admitted);
     assert(adapter.Last.Kind==S::StateMessageKind::ResyncRequest && adapter.Last.Resync);
@@ -151,6 +183,15 @@ int main(){
     admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteOwner});
     assert(admitted.Disposition==Primitive::PrimitiveAdmissionDisposition::AlreadyAccepted);
     assert(adapter.Last.Kind==S::StateMessageKind::ResyncAccepted);
+    assert(runtime.TryReadRemote<RuntimeState>(remoteOwner.Device,read) && read.Value.Value==30);
+
+    assert(runtime.Unsubscribe<RuntimeState>(session.Handle,S::StateReplicaRelease::RetainLastKnown)==S::StateRemoteStatus::Success);
+    const auto admissionsAfterClose=adapter.Admissions;
+    encoded=S::EncodeStateControl(required,bytes.data(),bytes.size());assert(encoded);
+    admitted=runtime.AdmitRemote<RuntimeState,Format>(bytes.data(),encoded.Bytes,{remoteOwner});
+    assert(admitted.Disposition==Primitive::PrimitiveAdmissionDisposition::Rejected);
+    assert(adapter.Admissions==admissionsAfterClose);
+    assert(runtime.GetRemoteSessionStatus<RuntimeState>(remoteOwner.Device)==S::StateRemoteSessionState::Inactive);
     assert(runtime.TryReadRemote<RuntimeState>(remoteOwner.Device,read) && read.Value.Value==30);
 
     assert(runtime.Shutdown()==S::StateRuntimeStatus::Success);

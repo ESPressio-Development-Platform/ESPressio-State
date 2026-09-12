@@ -96,3 +96,31 @@ incomplete: original Revision 102 lines 1–3250 and Section 26 lines 10317–12
 fully counted ranges. A later attempt to read lines 3251–5500 was truncated and is not counted.
 The exhaustive Section 0 source audit, adapter wake/continuity seam, finite campaigns,
 legacy replacement/eradication, documentation/examples/resources and final gates remain open.
+
+## 2026-09-12 correlated resync and first-baseline repairs
+
+The published handshake/P1 base is `1b51d0c44d59643beac8996f7a412795a9be27d9`;
+local sibling `d1e5b8b245e14729a02e9dfc50004d8df897dcc1` has the identical tree and is
+not an additional published checkpoint. A concurrent continuation's changes were preserved.
+
+Focused regression review found three defects in that base. Wire ResyncRequired now checks
+the exact owner incarnation, session and active state in the same table transaction that
+allocates its fresh token; delayed controls cannot invalidate replacement or closed sessions.
+The first truth committed during SubscribeNoValue establishment remains dirty for a protected
+BaselineSnapshot. Ordinary baseline/publication acceptance cannot restore trust during resync;
+only the token-correlated ResyncAccepted path may do so.
+
+All three regressions were observed failing before their corresponding source repairs.
+The 14 active host tests passed during this checkpoint; remote_runtime, remote_sessions and
+subscriptions were rebuilt and passed after the final correlated-ACK guard. Compiler flags
+remain C++17, warnings as errors and no RTTI. Exact published SHA and CI follow in the
+canonical and Primitive handoffs. No complete nonblocking-ingress or tranche claim is made.
+
+The uninterrupted foreground continuation has now completed the remaining architecture
+document reading, including Sections 8–25, 27–32 and the historical revision ledger; truncated
+ranges were reread in smaller chunks. This supersedes the earlier partial reading counters.
+The exhaustive source-hotspot audit remains open. Additional inspected code includes current
+Command lane/admission implementation, Mesh receiver/worker, all four MeshAdapters submission
+paths, RadioWorker and RadioTransport ingress/fragmentation. These still expose the documented
+later-tranche migration gaps. Continue the source audit and State completion under existing
+authorization; do not repeat the entire document read or request implementation permission.
